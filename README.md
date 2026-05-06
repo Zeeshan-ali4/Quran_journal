@@ -1,4 +1,4 @@
-# Welcome to your Expo app
+# Welcome to the Quran Journaling Expo app
 
 ## Project info
 
