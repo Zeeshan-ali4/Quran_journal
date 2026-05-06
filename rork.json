@@ -1,0 +1,14 @@
+{
+  "apps": [
+    {
+      "name": "Qur'an Notes",
+      "path": "expo",
+      "framework": "react-native"
+    },
+    {
+      "name": "Qur'an Notes",
+      "path": "expo",
+      "framework": "react-native"
+    }
+  ]
+}
