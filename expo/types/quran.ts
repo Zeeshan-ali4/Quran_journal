@@ -17,49 +17,42 @@ export interface SurahDetail extends SurahSummary {
   verses: Verse[];
 }
 
-export type NoteTargetType = 'chapter' | 'verse' | 'word';
-export type SocialRelation = 'you' | 'following' | 'follower' | 'mutual' | 'none';
-
-export interface NoteTarget {
-  type: NoteTargetType;
+export interface QuranAyah {
   surahNumber: number;
-  surahName: string;
-  verseNumber?: number;
-  word?: string;
+  ayahNumber: number;
+  arabicText: string;
+  translation: string;
 }
 
-export interface NoteAuthor {
-  id: string;
-  name: string;
-  handle: string;
-  avatar: string;
-  relation: SocialRelation;
-}
+export type NoteReferenceType = 'surah' | 'ayah' | 'word';
+export type NoteTag = 'reflection' | 'action' | 'question' | "du'a" | 'theme';
 
-export interface NoteItem {
+export interface UserNote {
   id: string;
-  target: NoteTarget;
+  referenceType: NoteReferenceType;
+  surahNumber: number;
+  ayahNumber?: number;
+  wordIndex?: number;
   content: string;
+  tags: string[];
   createdAt: string;
-  author: NoteAuthor;
-  isShared: boolean;
+  updatedAt: string;
 }
 
-export interface SocialPreferences {
-  shareNotesToFollowers: boolean;
-  showFollowerNotes: boolean;
-}
-
-export interface SocialProfile {
+export interface TafsirEntry {
   id: string;
-  name: string;
-  handle: string;
-  avatar: string;
-  bio: string;
-  city: string;
-  favoriteSurah: string;
-  followersCount: number;
-  followingCount: number;
-  notesSharedCount: number;
-  relation: SocialRelation;
+  source: string;
+  surahNumber: number;
+  ayahNumber: number;
+  content: string;
+}
+
+export interface HadithLink {
+  id: string;
+  surahNumber: number;
+  ayahNumber: number;
+  hadithReference: string;
+  text: string;
+  grading: string;
+  source: string;
 }

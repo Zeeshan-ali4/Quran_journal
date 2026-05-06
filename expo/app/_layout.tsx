@@ -22,13 +22,6 @@ function RootLayoutNav() {
           presentation: 'card',
         }}
       />
-      <Stack.Screen
-        name="profile/[id]"
-        options={{
-          headerShown: false,
-          presentation: 'card',
-        }}
-      />
     </Stack>
   );
 }
