@@ -1,33 +1,33 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { BookMarked, Globe2, MessageSquareQuote, Trash2, Type } from 'lucide-react-native';
+import { BookMarked, MessageSquareQuote, Trash2, Type } from 'lucide-react-native';
 
 import { palette } from '@/constants/colors';
-import type { NoteItem } from '@/types/quran';
+import type { UserNote } from '@/types/quran';
 
 interface NoteCardProps {
-  note: NoteItem;
+  note: UserNote;
   onDelete?: (id: string) => void;
 }
 
-function getLabel(note: NoteItem) {
-  if (note.target.type === 'chapter') {
-    return `Chapter note · Surah ${note.target.surahNumber}`;
+function getLabel(note: UserNote) {
+  if (note.referenceType === 'surah') {
+    return `Surah note · Surah ${note.surahNumber}`;
   }
 
-  if (note.target.type === 'verse') {
-    return `Verse note · Ayah ${note.target.verseNumber}`;
+  if (note.referenceType === 'ayah') {
+    return `Ayah note · Surah ${note.surahNumber}${note.ayahNumber ? `:${note.ayahNumber}` : ''}`;
   }
 
-  return `Word note · ${note.target.word}`;
+  return `Word note · Surah ${note.surahNumber}${note.ayahNumber ? `:${note.ayahNumber}` : ''}`;
 }
 
-function NoteIcon({ type }: { type: NoteItem['target']['type'] }) {
-  if (type === 'chapter') {
+function NoteIcon({ type }: { type: UserNote['referenceType'] }) {
+  if (type === 'surah') {
     return <BookMarked color={palette.forest} size={18} />;
   }
 
-  if (type === 'verse') {
+  if (type === 'ayah') {
     return <MessageSquareQuote color={palette.forest} size={18} />;
   }
 
@@ -39,14 +39,11 @@ export function NoteCard({ note, onDelete }: NoteCardProps) {
     <View style={styles.card} testID={`note-card-${note.id}`}>
       <View style={styles.headerRow}>
         <View style={styles.badge}>
-          <NoteIcon type={note.target.type} />
+          <NoteIcon type={note.referenceType} />
         </View>
         <View style={styles.headerText}>
           <Text style={styles.label}>{getLabel(note)}</Text>
-          <Text style={styles.subtitle}>
-            {note.target.surahName}
-            {note.target.verseNumber ? ` · ${note.target.verseNumber}` : ''}
-          </Text>
+          <Text style={styles.subtitle}>{note.ayahNumber ? `Ayah ${note.ayahNumber}` : 'Surah reflection'}</Text>
         </View>
         {onDelete ? (
           <Pressable onPress={() => onDelete(note.id)} hitSlop={8} testID={`delete-note-${note.id}`}>
@@ -55,27 +52,22 @@ export function NoteCard({ note, onDelete }: NoteCardProps) {
         ) : null}
       </View>
 
-      <View style={styles.authorRow}>
-        <View style={[styles.avatar, note.author.relation === 'you' ? styles.avatarYou : styles.avatarFollower]}>
-          <Text style={styles.avatarText}>{note.author.avatar}</Text>
-        </View>
-        <View style={styles.authorTextWrap}>
-          <Text style={styles.authorName}>{note.author.name}</Text>
-          <Text style={styles.authorHandle}>{note.author.handle}</Text>
-        </View>
-        {note.isShared ? (
-          <View style={styles.sharedPill}>
-            <Globe2 color={palette.forest} size={12} />
-            <Text style={styles.sharedPillText}>Shared</Text>
-          </View>
+      <Text style={styles.content}>{note.content}</Text>
+
+      <View style={styles.tagsRow}>
+        {note.tags.length > 0 ? (
+          note.tags.map((tag) => (
+            <View key={tag} style={styles.tagChip}>
+              <Text style={styles.tagText}>{tag}</Text>
+            </View>
+          ))
         ) : (
-          <View style={styles.privatePill}>
-            <Text style={styles.privatePillText}>Private</Text>
+          <View style={styles.tagChip}>
+            <Text style={styles.tagText}>untagged</Text>
           </View>
         )}
       </View>
 
-      <Text style={styles.content}>{note.content}</Text>
       <Text style={styles.timestamp}>{new Date(note.createdAt).toLocaleString()}</Text>
     </View>
   );
@@ -117,72 +109,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '500',
   },
-  authorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  avatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarYou: {
-    backgroundColor: palette.forest,
-  },
-  avatarFollower: {
-    backgroundColor: '#E7D7BB',
-  },
-  avatarText: {
-    color: palette.white,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  authorTextWrap: {
-    flex: 1,
-    gap: 2,
-  },
-  authorName: {
-    color: palette.ink,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  authorHandle: {
-    color: palette.smoke,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  sharedPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    backgroundColor: '#EEF4EB',
-  },
-  sharedPillText: {
-    color: palette.forest,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  privatePill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    backgroundColor: '#F4ECE5',
-  },
-  privatePillText: {
-    color: palette.smoke,
-    fontSize: 12,
-    fontWeight: '700',
-  },
   content: {
     color: palette.ink,
     fontSize: 15,
     lineHeight: 24,
+  },
+  tagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  tagChip: {
+    borderRadius: 999,
+    backgroundColor: palette.mist,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  tagText: {
+    color: palette.smoke,
+    fontSize: 12,
+    fontWeight: '700',
   },
   timestamp: {
     color: palette.smoke,
