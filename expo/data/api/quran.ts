@@ -1,3 +1,4 @@
+import surahList from '@/data/surah-list.json';
 import type { SurahDetail, SurahSummary, Verse } from '@/types/quran';
 
 interface SurahListResponse {
@@ -36,16 +37,7 @@ function assertOk(response: Response) {
 }
 
 export async function fetchSurahList(): Promise<SurahSummary[]> {
-  console.log('[QuranAPI] Fetching surah list');
-  const response = await fetch(`${API_BASE_URL}/surah`);
-  assertOk(response);
-  const payload = (await response.json()) as SurahListResponse;
-
-  if (!Array.isArray(payload.data)) {
-    throw new Error('Invalid surah list response');
-  }
-
-  return payload.data;
+  return surahList as SurahSummary[];
 }
 
 export async function fetchSurahDetail(surahNumber: number): Promise<SurahDetail> {
