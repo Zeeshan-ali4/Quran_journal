@@ -41,10 +41,22 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     await persist(next);
   }, [notes, persist]);
 
-  const updateNote = useCallback(async (id: string, content: string, tags: string[]) => {
-    const next = notes.map((n) => (n.id === id ? { ...n, content, tags, updatedAt: new Date().toISOString() } : n));
-    await persist(next);
-  }, [notes, persist]);
+  const updateNote = useCallback(
+    async (id: string, patch: Partial<Pick<UserNote, 'content' | 'tags'>>) => {
+      const target = notes.find((note) => note.id === id);
+      if (!target) {
+        return;
+      }
+
+      const next = notes.map((note) => (
+        note.id === id
+          ? { ...note, ...patch, updatedAt: new Date().toISOString() }
+          : note
+      ));
+      await persist(next);
+    },
+    [notes, persist],
+  );
 
   const deleteNote = useCallback(async (id: string) => {
     await persist(notes.filter((n) => n.id !== id));

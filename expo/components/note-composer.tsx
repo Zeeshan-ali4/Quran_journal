@@ -12,20 +12,38 @@ interface NoteComposerProps {
   surahNumber: number;
   ayahNumber: number;
   surahName: string;
+  initialContent?: string;
+  initialTags?: NoteTag[];
   onClose: () => void;
   onSave: (content: string, tags: string[]) => void;
 }
 
-export function NoteComposer({ visible, surahNumber, ayahNumber, surahName, onClose, onSave }: NoteComposerProps) {
+const MIN_CONTENT_LENGTH = 2;
+const MAX_CONTENT_LENGTH = 4000;
+
+export function NoteComposer({
+  visible,
+  surahNumber,
+  ayahNumber,
+  surahName,
+  initialContent,
+  initialTags,
+  onClose,
+  onSave,
+}: NoteComposerProps) {
   const [content, setContent] = useState('');
   const [tags, setTags] = useState<NoteTag[]>(['reflection']);
 
   useEffect(() => {
-    if (!visible) {
-      setContent('');
-      setTags(['reflection']);
+    if (visible) {
+      setContent(initialContent ?? '');
+      setTags(initialTags?.length ? initialTags : ['reflection']);
+      return;
     }
-  }, [visible]);
+
+    setContent('');
+    setTags(['reflection']);
+  }, [initialContent, initialTags, visible]);
 
   const label = useMemo(() => `Surah ${surahNumber}:${ayahNumber} · ${surahName}`, [ayahNumber, surahName, surahNumber]);
 
@@ -33,8 +51,11 @@ export function NoteComposer({ visible, surahNumber, ayahNumber, surahName, onCl
     setTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
   };
 
+  const trimmedLength = content.trim().length;
+  const isContentValid = trimmedLength >= MIN_CONTENT_LENGTH && content.length <= MAX_CONTENT_LENGTH;
+
   const handleSave = () => {
-    if (!content.trim()) {
+    if (!isContentValid) {
       return;
     }
 
@@ -63,6 +84,10 @@ export function NoteComposer({ visible, surahNumber, ayahNumber, surahName, onCl
               testID="note-composer-input"
             />
 
+            <Text style={[styles.counterText, content.length > MAX_CONTENT_LENGTH ? styles.counterTextInvalid : null]}>
+              {content.length}/{MAX_CONTENT_LENGTH}
+            </Text>
+
             <View style={styles.tagsRow}>
               {TAG_OPTIONS.map((tag) => {
                 const selected = tags.includes(tag);
@@ -85,8 +110,8 @@ export function NoteComposer({ visible, surahNumber, ayahNumber, surahName, onCl
               </Pressable>
               <Pressable
                 onPress={handleSave}
-                style={[styles.primaryButton, !content.trim() ? styles.buttonDisabled : null]}
-                disabled={!content.trim()}
+                style={[styles.primaryButton, !isContentValid ? styles.buttonDisabled : null]}
+                disabled={!isContentValid}
                 testID="note-save-button"
               >
                 <Text style={styles.primaryButtonText}>Save note</Text>
@@ -130,6 +155,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
     textAlignVertical: 'top',
+  },
+  counterText: {
+    color: palette.smoke,
+    fontSize: 12,
+    fontWeight: '600',
+    alignSelf: 'flex-end',
+  },
+  counterTextInvalid: {
+    color: palette.rose,
   },
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   tagChip: { borderRadius: 999, backgroundColor: palette.mist, paddingHorizontal: 12, paddingVertical: 8 },

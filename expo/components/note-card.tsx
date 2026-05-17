@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { BookMarked, MessageSquareQuote, Trash2, Type } from 'lucide-react-native';
+import { BookMarked, Edit2, MessageSquareQuote, Trash2, Type } from 'lucide-react-native';
 
 import { palette } from '@/constants/colors';
 import type { UserNote } from '@/types/quran';
@@ -8,6 +8,7 @@ import type { UserNote } from '@/types/quran';
 interface NoteCardProps {
   note: UserNote;
   onDelete?: (id: string) => void;
+  onEdit?: (note: UserNote) => void;
 }
 
 function getLabel(note: UserNote) {
@@ -34,7 +35,7 @@ function NoteIcon({ type }: { type: UserNote['referenceType'] }) {
   return <Type color={palette.forest} size={18} />;
 }
 
-export function NoteCard({ note, onDelete }: NoteCardProps) {
+export function NoteCard({ note, onDelete, onEdit }: NoteCardProps) {
   return (
     <View style={styles.card} testID={`note-card-${note.id}`}>
       <View style={styles.headerRow}>
@@ -45,11 +46,18 @@ export function NoteCard({ note, onDelete }: NoteCardProps) {
           <Text style={styles.label}>{getLabel(note)}</Text>
           <Text style={styles.subtitle}>{note.ayahNumber ? `Ayah ${note.ayahNumber}` : 'Surah reflection'}</Text>
         </View>
-        {onDelete ? (
-          <Pressable onPress={() => onDelete(note.id)} hitSlop={8} testID={`delete-note-${note.id}`}>
-            <Trash2 color={palette.rose} size={18} />
-          </Pressable>
-        ) : null}
+        <View style={styles.actionsRow}>
+          {onEdit ? (
+            <Pressable onPress={() => onEdit(note)} hitSlop={8} testID={`edit-note-${note.id}`}>
+              <Edit2 color={palette.forest} size={18} />
+            </Pressable>
+          ) : null}
+          {onDelete ? (
+            <Pressable onPress={() => onDelete(note.id)} hitSlop={8} testID={`delete-note-${note.id}`}>
+              <Trash2 color={palette.rose} size={18} />
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       <Text style={styles.content}>{note.content}</Text>
@@ -98,6 +106,11 @@ const styles = StyleSheet.create({
   headerText: {
     flex: 1,
     gap: 2,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   label: {
     color: palette.ink,

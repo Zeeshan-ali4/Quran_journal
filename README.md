@@ -53,13 +53,7 @@ No:
 
 The Qur’an should remain accessible everywhere.
 
-Core functionality works without an internet connection, including:
-
-* Qur’an reading
-* Journaling
-* Personal notes
-* Search
-* Basic tafsir access (where bundled locally)
+Journaling, personal notes, and search work fully offline. Qur’an text is currently fetched on first view and cached for the session; full offline Qur’an bundling is on the roadmap (see Planned Features).
 
 ---
 
@@ -114,13 +108,6 @@ Users can:
   * du'a
   * theme
 
-## Tafsir Layer
-
-* Trusted tafsir sources
-* Read-only
-* Hide/show toggle
-* Clearly separated from personal notes
-
 ## Search
 
 * Offline search through personal notes and reflections
@@ -140,12 +127,20 @@ Optional prompts to encourage deeper thinking:
 
 Future features may include:
 
+## Tafsir Layer
+
+* Trusted tafsir sources
+* Read-only
+* Hide/show toggle
+* Clearly separated from personal notes
+
 * Surah-level notes
 * Word-level notes
 * Qur’an ↔ Hadith linking
 * Personal knowledge graph
 * Cross-reference system between ayahs and themes
 * Optional encrypted sync across devices
+* Bundled offline Qur’an text
 
 These features will only be added if they improve reflection and understanding without compromising simplicity.
 
@@ -272,15 +267,14 @@ Scan the QR code with Expo Go.
 ```plaintext
 app/                    # Expo Router screens
 components/             # Reusable UI components
-services/               # Storage and business logic
+providers/              # App state providers
 constants/              # App constants/config
+data/api/               # Remote API clients
+types/                  # Shared TypeScript types
 assets/                 # Images/fonts/static assets
 
 app/(tabs)/             # Main navigation
 app/_layout.tsx         # Root layout
-
-types/                  # Shared TypeScript types
-hooks/                  # Reusable hooks
 ```
 
 ---
