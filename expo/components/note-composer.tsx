@@ -1,68 +1,37 @@
 import * as Haptics from 'expo-haptics';
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
-import { Eye, EyeOff, Share2 } from 'lucide-react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { palette } from '@/constants/colors';
-import type { NoteTarget } from '@/types/quran';
+import type { NoteTag } from '@/types/quran';
+
+const TAG_OPTIONS: NoteTag[] = ['reflection', 'action', 'question', "du'a", 'theme'];
 
 interface NoteComposerProps {
   visible: boolean;
-  target: NoteTarget | null;
-  defaultShareEnabled: boolean;
+  surahNumber: number;
+  ayahNumber: number;
+  surahName: string;
   onClose: () => void;
-  onSave: (content: string, shouldShare: boolean) => void;
+  onSave: (content: string, tags: string[]) => void;
 }
 
-function getTargetLabel(target: NoteTarget | null) {
-  if (!target) {
-    return '';
-  }
-
-  if (target.type === 'chapter') {
-    return `Surah ${target.surahNumber} · ${target.surahName}`;
-  }
-
-  if (target.type === 'verse') {
-    return `Ayah ${target.verseNumber} · ${target.surahName}`;
-  }
-
-  return `${target.word} · Ayah ${target.verseNumber}`;
-}
-
-export function NoteComposer({
-  visible,
-  target,
-  defaultShareEnabled,
-  onClose,
-  onSave,
-}: NoteComposerProps) {
-  const [content, setContent] = useState<string>('');
-  const [shareWithFollowers, setShareWithFollowers] = useState<boolean>(defaultShareEnabled);
+export function NoteComposer({ visible, surahNumber, ayahNumber, surahName, onClose, onSave }: NoteComposerProps) {
+  const [content, setContent] = useState('');
+  const [tags, setTags] = useState<NoteTag[]>(['reflection']);
 
   useEffect(() => {
     if (!visible) {
       setContent('');
-      setShareWithFollowers(defaultShareEnabled);
+      setTags(['reflection']);
     }
-  }, [defaultShareEnabled, visible]);
+  }, [visible]);
 
-  useEffect(() => {
-    if (visible) {
-      setShareWithFollowers(defaultShareEnabled);
-    }
-  }, [defaultShareEnabled, visible]);
+  const label = useMemo(() => `Surah ${surahNumber}:${ayahNumber} · ${surahName}`, [ayahNumber, surahName, surahNumber]);
 
-  const label = useMemo(() => getTargetLabel(target), [target]);
+  const toggleTag = (tag: NoteTag) => {
+    setTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
+  };
 
   const handleSave = () => {
     if (!content.trim()) {
@@ -70,17 +39,15 @@ export function NoteComposer({
     }
 
     void Haptics.selectionAsync();
-    onSave(content, shareWithFollowers);
+    onSave(content, tags);
     setContent('');
+    setTags(['reflection']);
   };
 
   return (
     <Modal animationType="slide" transparent visible={visible} onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.keyboardShell}
-        >
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardShell}>
           <View style={styles.sheet}>
             <View style={styles.grabber} />
             <Text style={styles.eyebrow}>New note</Text>
@@ -96,36 +63,21 @@ export function NoteComposer({
               testID="note-composer-input"
             />
 
-            <Pressable
-              onPress={() => setShareWithFollowers((current) => !current)}
-              style={styles.visibilityCard}
-              testID="note-share-toggle"
-            >
-              <View style={styles.visibilityIconBadge}>
-                {shareWithFollowers ? (
-                  <Share2 color={palette.forest} size={16} />
-                ) : (
-                  <EyeOff color={palette.rose} size={16} />
-                )}
-              </View>
-              <View style={styles.visibilityTextWrap}>
-                <Text style={styles.visibilityTitle}>
-                  {shareWithFollowers ? 'Shared with followers' : 'Private note'}
-                </Text>
-                <Text style={styles.visibilityBody}>
-                  {shareWithFollowers
-                    ? 'Followers you trust can see this reflection in their feed.'
-                    : 'Only you can see this note.'}
-                </Text>
-              </View>
-              <View style={[styles.pill, shareWithFollowers ? styles.pillActive : styles.pillInactive]}>
-                {shareWithFollowers ? (
-                  <Eye color={palette.white} size={14} />
-                ) : (
-                  <EyeOff color={palette.smoke} size={14} />
-                )}
-              </View>
-            </Pressable>
+            <View style={styles.tagsRow}>
+              {TAG_OPTIONS.map((tag) => {
+                const selected = tags.includes(tag);
+                return (
+                  <Pressable
+                    key={tag}
+                    onPress={() => toggleTag(tag)}
+                    style={[styles.tagChip, selected ? styles.tagChipSelected : null]}
+                    testID={`note-tag-${tag}`}
+                  >
+                    <Text style={[styles.tagText, selected ? styles.tagTextSelected : null]}>{tag}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
             <View style={styles.actions}>
               <Pressable onPress={onClose} style={styles.secondaryButton} testID="note-cancel-button">
@@ -148,14 +100,8 @@ export function NoteComposer({
 }
 
 const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: palette.overlay,
-    justifyContent: 'flex-end',
-  },
-  keyboardShell: {
-    width: '100%',
-  },
+  overlay: { flex: 1, backgroundColor: palette.overlay, justifyContent: 'flex-end' },
+  keyboardShell: { width: '100%' },
   sheet: {
     backgroundColor: palette.paper,
     borderTopLeftRadius: 32,
@@ -170,22 +116,11 @@ const styles = StyleSheet.create({
     width: 56,
     height: 5,
     borderRadius: 999,
-    backgroundColor: 'rgba(32, 51, 40, 0.18)',
+    backgroundColor: palette.border,
     marginBottom: 4,
   },
-  eyebrow: {
-    color: palette.rose,
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1.1,
-  },
-  title: {
-    color: palette.ink,
-    fontSize: 22,
-    fontWeight: '700',
-    lineHeight: 28,
-  },
+  eyebrow: { color: palette.rose, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1.1 },
+  title: { color: palette.ink, fontSize: 22, fontWeight: '700', lineHeight: 28 },
   input: {
     minHeight: 180,
     borderRadius: 24,
@@ -196,55 +131,12 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     textAlignVertical: 'top',
   },
-  visibilityCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    borderRadius: 24,
-    backgroundColor: palette.white,
-    borderWidth: 1,
-    borderColor: palette.border,
-    padding: 16,
-  },
-  visibilityIconBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    backgroundColor: palette.sand,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  visibilityTextWrap: {
-    flex: 1,
-    gap: 4,
-  },
-  visibilityTitle: {
-    color: palette.ink,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  visibilityBody: {
-    color: palette.smoke,
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  pill: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pillActive: {
-    backgroundColor: palette.forest,
-  },
-  pillInactive: {
-    backgroundColor: '#F3EEE4',
-  },
-  actions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
+  tagsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  tagChip: { borderRadius: 999, backgroundColor: palette.mist, paddingHorizontal: 12, paddingVertical: 8 },
+  tagChipSelected: { backgroundColor: palette.sand },
+  tagText: { color: palette.smoke, fontWeight: '600' },
+  tagTextSelected: { color: palette.forest, fontWeight: '700' },
+  actions: { flexDirection: 'row', gap: 12 },
   secondaryButton: {
     flex: 1,
     borderRadius: 18,
@@ -254,11 +146,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: palette.white,
   },
-  secondaryButtonText: {
-    color: palette.ink,
-    fontWeight: '600',
-    fontSize: 15,
-  },
+  secondaryButtonText: { color: palette.ink, fontWeight: '600', fontSize: 15 },
   primaryButton: {
     flex: 1.3,
     borderRadius: 18,
@@ -266,12 +154,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: palette.forest,
   },
-  primaryButtonText: {
-    color: palette.white,
-    fontWeight: '700',
-    fontSize: 15,
-  },
-  buttonDisabled: {
-    opacity: 0.45,
-  },
+  primaryButtonText: { color: palette.white, fontWeight: '700', fontSize: 15 },
+  buttonDisabled: { opacity: 0.45 },
 });
