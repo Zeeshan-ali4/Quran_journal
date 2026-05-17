@@ -3,19 +3,13 @@ import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
-import { palette } from '@/constants/colors';
-import { fetchSurahDetail } from '@/data/api/quran';
 import { NoteCard } from '@/components/note-card';
 import { NoteComposer } from '@/components/note-composer';
+import { palette } from '@/constants/colors';
+import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
+import { fetchSurahDetail } from '@/data/api/quran';
 import { useNotes } from '@/providers/notes-provider';
-import type { NoteTag } from '@/types/quran';
-
-const PROMPTS = [
-  'What does this ayah teach me about Allah?',
-  'What action can I take from this ayah?',
-  'What guidance, warning, or comfort is here?',
-  'What question do I want to study further?',
-];
+import type { NoteTag, UserNote } from '@/types/quran';
 
 function AyahCard({ arabic, translation, onPress }: { arabic: string; translation: string; onPress: () => void }) {
   return (
@@ -26,15 +20,21 @@ function AyahCard({ arabic, translation, onPress }: { arabic: string; translatio
   );
 }
 
-function ReflectionPanel({ selectedAyah, onOpenComposer }: { selectedAyah: number; onOpenComposer: () => void }) {
+function ReflectionPanel({ selectedAyah, onPromptPress, onOpenComposer }: {
+  selectedAyah: number;
+  onPromptPress: (prompt: string) => void;
+  onOpenComposer: () => void;
+}) {
   return (
     <View style={styles.panel}>
       <Text style={styles.title}>Ayah {selectedAyah} — My Reflection</Text>
-      {PROMPTS.map((prompt) => (
-        <Text key={prompt} style={styles.prompt}>
-          • {prompt}
-        </Text>
-      ))}
+      <View style={styles.promptsRow}>
+        {REFLECTION_PROMPTS.map((prompt, index) => (
+          <Pressable key={prompt} style={styles.promptChip} onPress={() => onPromptPress(prompt)} testID={`prompt-chip-${index}`}>
+            <Text style={styles.promptText}>{prompt}</Text>
+          </Pressable>
+        ))}
+      </View>
       <Pressable onPress={onOpenComposer}>
         <Text style={styles.buttonText}>Add Reflection Note</Text>
       </Pressable>
@@ -56,22 +56,55 @@ export default function SurahScreen() {
 
   const [selectedAyah, setSelectedAyah] = useState<number | null>(null);
   const [composerVisible, setComposerVisible] = useState(false);
-  const { notesForAyah, addNote, deleteNote } = useNotes();
+  const [composerInitialContent, setComposerInitialContent] = useState('');
+  const [composerInitialTags, setComposerInitialTags] = useState<NoteTag[] | undefined>(undefined);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const { notesForAyah, addNote, updateNote, deleteNote } = useNotes();
 
   const selectedNotes = selectedAyah ? notesForAyah(surahNumber, selectedAyah) : [];
+
+  const openComposer = () => {
+    setEditingNoteId(null);
+    setComposerInitialContent('');
+    setComposerInitialTags(undefined);
+    setComposerVisible(true);
+  };
+
+  const handlePromptPress = (prompt: string) => {
+    const promptContent = `${prompt}\n\n`;
+    setEditingNoteId(null);
+    setComposerInitialTags(undefined);
+    setComposerInitialContent((current) => (current ? `${current}\n\n${promptContent}` : promptContent));
+    setComposerVisible(true);
+  };
+
+  const handleEditNote = (note: UserNote) => {
+    setEditingNoteId(note.id);
+    setComposerInitialContent(note.content);
+    setComposerInitialTags(note.tags);
+    setComposerVisible(true);
+  };
 
   const handleSaveNote = (content: string, tags: string[]) => {
     if (!selectedAyah) {
       return;
     }
 
-    addNote({
-      referenceType: 'ayah',
-      surahNumber,
-      ayahNumber: selectedAyah,
-      content,
-      tags: tags as NoteTag[],
-    });
+    if (editingNoteId) {
+      void updateNote(editingNoteId, { content, tags: tags as NoteTag[] });
+      setEditingNoteId(null);
+    } else {
+      void addNote({
+        referenceType: 'ayah',
+        surahNumber,
+        ayahNumber: selectedAyah,
+        content,
+        tags: tags as NoteTag[],
+      });
+    }
+
+    setComposerInitialContent('');
+    setComposerInitialTags(undefined);
     setComposerVisible(false);
   };
 
@@ -90,11 +123,11 @@ export default function SurahScreen() {
 
       {selectedAyah ? (
         <>
-          <ReflectionPanel selectedAyah={selectedAyah} onOpenComposer={() => setComposerVisible(true)} />
+          <ReflectionPanel selectedAyah={selectedAyah} onPromptPress={handlePromptPress} onOpenComposer={openComposer} />
 
           {selectedNotes.map((note) => (
             <NoteRow key={note.id}>
-              <NoteCard note={note} onDelete={deleteNote} />
+              <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
             </NoteRow>
           ))}
         </>
@@ -105,6 +138,8 @@ export default function SurahScreen() {
         surahNumber={surahNumber}
         ayahNumber={selectedAyah ?? 1}
         surahName={query.data?.englishName || 'Surah'}
+        initialContent={composerInitialContent}
+        initialTags={composerInitialTags}
         onClose={() => setComposerVisible(false)}
         onSave={handleSaveNote}
       />
@@ -144,8 +179,20 @@ const styles = StyleSheet.create({
   title: {
     fontWeight: '700',
   },
-  prompt: {
-    color: palette.smoke,
+  promptsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  promptChip: {
+    borderRadius: 999,
+    backgroundColor: palette.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  promptText: {
+    color: palette.forest,
+    fontWeight: '600',
   },
   buttonText: {
     backgroundColor: palette.forest,
