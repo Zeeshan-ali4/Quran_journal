@@ -8,6 +8,7 @@ import React, { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AppErrorBoundary } from '@/components/app-error-boundary';
+import { NotesProvider } from '@/providers/notes-provider';
 import { ThemeProvider } from '@/providers/theme-provider';
 
 void SplashScreen.preventAutoHideAsync();
@@ -19,5 +20,5 @@ function RootLayoutNav() { return <Stack screenOptions={{ headerBackTitle: 'Back
 
 export default function RootLayout() {
   useEffect(() => { void SplashScreen.hideAsync(); }, []);
-  return <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}><GestureHandlerRootView style={{ flex: 1 }}><ThemeProvider><AppErrorBoundary><RootLayoutNav /></AppErrorBoundary></ThemeProvider></GestureHandlerRootView></PersistQueryClientProvider>;
+  return <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}><GestureHandlerRootView style={{ flex: 1 }}><ThemeProvider><NotesProvider><AppErrorBoundary><RootLayoutNav /></AppErrorBoundary></NotesProvider></ThemeProvider></GestureHandlerRootView></PersistQueryClientProvider>;
 }
