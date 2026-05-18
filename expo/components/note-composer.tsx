@@ -3,14 +3,17 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { palette } from '@/constants/colors';
-import type { NoteTag } from '@/types/quran';
+import type { NoteReferenceType, NoteTag } from '@/types/quran';
 
 const TAG_OPTIONS: NoteTag[] = ['reflection', 'action', 'question', "du'a", 'theme'];
 
 interface NoteComposerProps {
   visible: boolean;
+  referenceType: NoteReferenceType;
   surahNumber: number;
-  ayahNumber: number;
+  ayahNumber?: number;
+  wordIndex?: number;
+  wordText?: string;
   surahName: string;
   initialContent?: string;
   initialTags?: NoteTag[];
@@ -23,8 +26,10 @@ const MAX_CONTENT_LENGTH = 4000;
 
 export function NoteComposer({
   visible,
+  referenceType,
   surahNumber,
   ayahNumber,
+  wordText,
   surahName,
   initialContent,
   initialTags,
@@ -45,7 +50,17 @@ export function NoteComposer({
     setTags(['reflection']);
   }, [initialContent, initialTags, visible]);
 
-  const label = useMemo(() => `Surah ${surahNumber}:${ayahNumber} · ${surahName}`, [ayahNumber, surahName, surahNumber]);
+  const header = useMemo(() => {
+    if (referenceType === 'surah') {
+      return { eyebrow: 'Chapter note', title: `Surah ${surahNumber} · ${surahName}` };
+    }
+
+    if (referenceType === 'word') {
+      return { eyebrow: 'Word note', title: `"${wordText || ''}" · Surah ${surahNumber}:${ayahNumber ?? 1}` };
+    }
+
+    return { eyebrow: 'Ayah note', title: `Surah ${surahNumber}:${ayahNumber ?? 1} · ${surahName}` };
+  }, [ayahNumber, referenceType, surahName, surahNumber, wordText]);
 
   const toggleTag = (tag: NoteTag) => {
     setTags((current) => (current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]));
@@ -71,8 +86,8 @@ export function NoteComposer({
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.keyboardShell}>
           <View style={styles.sheet}>
             <View style={styles.grabber} />
-            <Text style={styles.eyebrow}>New note</Text>
-            <Text style={styles.title}>{label}</Text>
+            <Text style={styles.eyebrow}>{header.eyebrow}</Text>
+            <Text style={styles.title}>{header.title}</Text>
             <TextInput
               multiline
               autoFocus

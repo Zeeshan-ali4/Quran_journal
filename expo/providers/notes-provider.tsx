@@ -66,11 +66,34 @@ export const [NotesProvider, useNotes] = createContextHook(() => {
     notes.filter((n) => n.referenceType === 'ayah' && n.surahNumber === surahNumber && n.ayahNumber === ayahNumber)
   ), [notes]);
 
+  const notesForSurah = useCallback((surahNumber: number) => (
+    notes.filter((n) => n.referenceType === 'surah' && n.surahNumber === surahNumber)
+  ), [notes]);
+
+  const notesForWord = useCallback((surahNumber: number, ayahNumber: number, wordIndex: number) => (
+    notes.filter((n) => (
+      n.referenceType === 'word'
+      && n.surahNumber === surahNumber
+      && n.ayahNumber === ayahNumber
+      && n.wordIndex === wordIndex
+    ))
+  ), [notes]);
+
   const searchNotes = useCallback((query: string) => {
     const q = query.trim().toLowerCase();
     if (!q) return notes;
     return notes.filter((n) => n.content.toLowerCase().includes(q) || n.tags.some((t) => t.toLowerCase().includes(q)));
   }, [notes]);
 
-  return useMemo(() => ({ isLoading, notes, addNote, updateNote, deleteNote, notesForAyah, searchNotes }), [isLoading, notes, addNote, updateNote, deleteNote, notesForAyah, searchNotes]);
+  return useMemo(() => ({
+    isLoading,
+    notes,
+    addNote,
+    updateNote,
+    deleteNote,
+    notesForAyah,
+    notesForSurah,
+    notesForWord,
+    searchNotes,
+  }), [isLoading, notes, addNote, updateNote, deleteNote, notesForAyah, notesForSurah, notesForWord, searchNotes]);
 });
