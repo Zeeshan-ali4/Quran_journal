@@ -88,7 +88,7 @@ export default function ReadScreen() {
           <Text style={styles.sectionMeta}>{filteredSurahs.length} chapters</Text>
         </View>
 
-        {surahsQuery.isLoading ? (
+        {surahsQuery.isPending ? (
           <View style={styles.stateCard}>
             <ActivityIndicator color={palette.forest} />
             <Text style={styles.stateTitle}>Loading chapters…</Text>
@@ -102,7 +102,7 @@ export default function ReadScreen() {
           </View>
         ) : null}
 
-        {!surahsQuery.isLoading && !surahsQuery.isError
+        {!surahsQuery.isPending && !surahsQuery.isError
           ? filteredSurahs.map((surah) => (
               <SurahListItem
                 key={surah.number}
@@ -112,7 +112,7 @@ export default function ReadScreen() {
             ))
           : null}
 
-        {!surahsQuery.isLoading && !surahsQuery.isError && filteredSurahs.length === 0 ? (
+        {!surahsQuery.isPending && !surahsQuery.isError && filteredSurahs.length === 0 ? (
           <View style={styles.stateCard}>
             <Text style={styles.stateTitle}>No matching chapters</Text>
             <Text style={styles.stateBody}>Try another spelling or search by translation.</Text>
