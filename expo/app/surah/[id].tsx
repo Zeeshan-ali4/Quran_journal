@@ -1,16 +1,18 @@
 import { useLocalSearchParams } from 'expo-router';
-import { BookOpen, Languages, MessageSquarePlus, Type } from 'lucide-react-native';
-import React, { memo, useEffect, useMemo, useState } from 'react';
+import { BookOpen, Headphones, Languages, MessageSquarePlus, Play, Type } from 'lucide-react-native';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
 import { NoteCard } from '@/components/note-card';
+import { ReciterPicker } from '@/components/reciter-picker';
 import { NoteComposer } from '@/components/note-composer';
 import { TafsirPicker } from '@/components/tafsir-picker';
 import { TranslationPicker } from '@/components/translation-picker';
 import { palette } from '@/constants/colors';
 import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
+import { useAudioStore } from '@/stores/audio-store';
 import { fetchSurahTafsir } from '@/data/api/tafsir';
 import { useNotes } from '@/providers/notes-provider';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
@@ -35,6 +37,7 @@ const AyahCard = memo(function AyahCard({
   onAyahPress,
   onWordPress,
   wordHasNotes,
+  isActive,
 }: {
   ayahNumber: number;
   arabic: string;
@@ -44,12 +47,13 @@ const AyahCard = memo(function AyahCard({
   onAyahPress: () => void;
   onWordPress: (wordIndex: number, wordText: string) => void;
   wordHasNotes: Set<number>;
+  isActive: boolean;
 }) {
   const words = useMemo(() => arabic.split(' ').filter(Boolean), [arabic]);
   const [tafsirExpanded, setTafsirExpanded] = useState(false);
 
   return (
-    <View style={styles.ayahCard}>
+    <View style={[styles.ayahCard, isActive ? styles.ayahCardActive : null]}>
       <View style={styles.ayahHeader}>
         <View style={styles.ayahNumberBadge}>
           <Text style={styles.ayahNumberText}>{ayahNumber}</Text>
@@ -128,6 +132,9 @@ export default function SurahScreen() {
   const { translationId, showTransliteration, showTafsir, tafsirSlug } = useQuranSettingsStore();
   const [pickerVisible, setPickerVisible] = useState(false);
   const [tafsirPickerVisible, setTafsirPickerVisible] = useState(false);
+  const [reciterPickerVisible, setReciterPickerVisible] = useState(false);
+  const listRef = useRef<FlatList<SurahListItem>>(null);
+  const { currentSurah, currentAyah, isPlaying, play, resume } = useAudioStore();
 
   const query = useQuery({
     queryKey: ['surah', surahNumber, translationId, showTransliteration],
@@ -204,6 +211,16 @@ export default function SurahScreen() {
     return items;
   }, [query.data?.verses, showTafsir, tafsirTexts]);
 
+  useEffect(() => {
+    if (currentSurah !== surahNumber || !currentAyah) {
+      return;
+    }
+
+    try {
+      listRef.current?.scrollToIndex({ index: currentAyah, animated: true, viewPosition: 0.2 });
+    } catch {}
+  }, [currentAyah, currentSurah, surahNumber]);
+
   const openComposer = () => {
     setEditingNoteId(null);
     setComposerInitialContent('');
@@ -257,6 +274,7 @@ export default function SurahScreen() {
   return (
     <>
       <FlatList
+        ref={listRef}
         style={styles.screen}
         contentContainerStyle={styles.content}
         data={listData}
@@ -273,6 +291,23 @@ export default function SurahScreen() {
                 <View style={styles.surahHeader}>
                   <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
                   <View style={styles.headerActions}>
+                    <Pressable
+                      style={styles.translationButton}
+                      onPress={() => {
+                        if (currentSurah === surahNumber && !isPlaying) {
+                          resume();
+                          return;
+                        }
+
+                        play(surahNumber, 1);
+                      }}
+                    >
+                      <Play color={palette.forest} size={15} />
+                      <Text style={styles.translationButtonText}>Play</Text>
+                    </Pressable>
+                    <Pressable style={styles.iconOnlyButton} onPress={() => setReciterPickerVisible(true)}>
+                      <Headphones color={palette.forest} size={15} />
+                    </Pressable>
                     <Pressable style={styles.translationButton} onPress={() => setPickerVisible(true)}>
                       <Languages color={palette.forest} size={15} />
                       <Text style={styles.translationButtonText}>{activeTranslationLabel}</Text>
@@ -341,6 +376,7 @@ export default function SurahScreen() {
                 openComposer();
               }}
               wordHasNotes={wordNoteMap.get(item.verse.numberInSurah) ?? new Set<number>()}
+              isActive={currentSurah === surahNumber && currentAyah === item.verse.numberInSurah}
             />
           );
         }}
@@ -348,6 +384,7 @@ export default function SurahScreen() {
 
       <TranslationPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
       <TafsirPicker visible={tafsirPickerVisible} onClose={() => setTafsirPickerVisible(false)} />
+      <ReciterPicker visible={reciterPickerVisible} onClose={() => setReciterPickerVisible(false)} />
 
       <NoteComposer
         visible={composerVisible}
@@ -374,7 +411,7 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     gap: 10,
-    paddingBottom: 32,
+    paddingBottom: 170,
   },
   surahHeader: {
     flexDirection: 'row',
@@ -401,6 +438,16 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 999,
   },
+  iconOnlyButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.mist,
+    borderWidth: 1,
+    borderColor: palette.border,
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+  },
   translationButtonText: {
     fontSize: 13,
     fontWeight: '600',
@@ -423,6 +470,11 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 16,
     gap: 12,
+  },
+  ayahCardActive: {
+    borderLeftWidth: 3,
+    borderLeftColor: palette.gold,
+    backgroundColor: 'rgba(196, 154, 83, 0.15)',
   },
   ayahHeader: {
     flexDirection: 'row',
