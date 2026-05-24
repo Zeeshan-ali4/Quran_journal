@@ -172,7 +172,7 @@ export default function SurahScreen() {
   const { notes, notesForAyah, notesForSurah, addNote, updateNote, deleteNote } = useNotes();
   const addBookmark = useBookmarkStore((state) => state.addBookmark);
   const removeBookmark = useBookmarkStore((state) => state.removeBookmark);
-  const isBookmarked = useBookmarkStore((state) => state.isBookmarked);
+  const bookmarks = useBookmarkStore((state) => state.bookmarks);
   const updateProgress = useBookmarkStore((state) => state.updateProgress);
 
   useEffect(() => {
@@ -403,10 +403,14 @@ export default function SurahScreen() {
                 setSelection({ type: 'word', ayahNumber: item.verse.numberInSurah, wordIndex, wordText });
                 openComposer();
               }}
-              isBookmarked={isBookmarked(surahNumber, item.verse.numberInSurah)}
+              isBookmarked={bookmarks.some(
+                (b) => b.surahNumber === surahNumber && b.ayahNumber === item.verse.numberInSurah
+              )}
               onBookmarkPress={() => {
                 const ayahNumber = item.verse.numberInSurah;
-                const alreadyBookmarked = isBookmarked(surahNumber, ayahNumber);
+                const alreadyBookmarked = bookmarks.some(
+                  (b) => b.surahNumber === surahNumber && b.ayahNumber === ayahNumber
+                );
                 updateProgress(surahNumber, ayahNumber);
                 if (alreadyBookmarked) {
                   removeBookmark(surahNumber, ayahNumber);
