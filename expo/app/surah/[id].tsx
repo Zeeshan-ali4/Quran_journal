@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { MessageSquarePlus, Type } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
@@ -17,40 +18,52 @@ type Selection =
   | { type: 'word'; ayahNumber: number; wordIndex: number; wordText: string };
 
 function AyahCard({
+  ayahNumber,
   arabic,
   translation,
   onAyahPress,
   onWordPress,
   wordHasNotes,
-  ayahNoteCount,
 }: {
+  ayahNumber: number;
   arabic: string;
   translation: string;
   onAyahPress: () => void;
   onWordPress: (wordIndex: number, wordText: string) => void;
   wordHasNotes: Set<number>;
-  ayahNoteCount: number;
 }) {
   const words = useMemo(() => arabic.split(' ').filter(Boolean), [arabic]);
 
   return (
     <View style={styles.ayahCard}>
-      <View style={styles.arabicWordsRow}>
-        {words.map((word, wordIndex) => (
-          <Pressable key={`${word}-${wordIndex}`} style={styles.wordPressable} onPress={() => onWordPress(wordIndex, word)}>
-            <Text style={styles.arabicWord}>{word}</Text>
-            {wordHasNotes.has(wordIndex) ? <View style={styles.wordDot} /> : null}
-          </Pressable>
-        ))}
-      </View>
-      <Pressable onPress={onAyahPress}>
-        <Text>{translation}</Text>
-      </Pressable>
-      {ayahNoteCount > 0 ? (
-        <View style={styles.ayahBadge}>
-          <Text style={styles.ayahBadgeText}>{ayahNoteCount} notes</Text>
+      <View style={styles.ayahHeader}>
+        <View style={styles.ayahNumberBadge}>
+          <Text style={styles.ayahNumberText}>{ayahNumber}</Text>
         </View>
-      ) : null}
+        <Pressable style={styles.ayahNoteButton} onPress={onAyahPress}>
+          <MessageSquarePlus color={palette.ink} size={15} />
+          <Text style={styles.ayahNoteButtonText}>Ayah note</Text>
+        </Pressable>
+      </View>
+
+      <Text style={styles.arabicVerse}>{arabic}</Text>
+      <Text style={styles.translationText}>{translation}</Text>
+
+      <View style={styles.wordChipsRow}>
+        {words.map((word, wordIndex) => {
+          const hasNote = wordHasNotes.has(wordIndex);
+          return (
+            <Pressable
+              key={`${word}-${wordIndex}`}
+              style={[styles.wordChip, hasNote ? styles.wordChipActive : null]}
+              onPress={() => onWordPress(wordIndex, word)}
+            >
+              <Type color={hasNote ? palette.forest : palette.smoke} size={12} />
+              <Text style={[styles.wordChipText, hasNote ? styles.wordChipTextActive : null]}>{word}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -113,16 +126,6 @@ export default function SurahScreen() {
       && note.wordIndex === selection.wordIndex
     ));
   }, [chapterNotes, notes, notesForAyah, selection, surahNumber]);
-
-  const ayahNoteCounts = useMemo(() => {
-    const counts = new Map<number, number>();
-    notes.forEach((note) => {
-      if (note.referenceType === 'ayah' && note.surahNumber === surahNumber && note.ayahNumber) {
-        counts.set(note.ayahNumber, (counts.get(note.ayahNumber) ?? 0) + 1);
-      }
-    });
-    return counts;
-  }, [notes, surahNumber]);
 
   const wordNoteMap = useMemo(() => {
     const map = new Map<number, Set<number>>();
@@ -210,6 +213,7 @@ export default function SurahScreen() {
       {query.data?.verses.map((verse) => (
         <AyahCard
           key={verse.numberInSurah}
+          ayahNumber={verse.numberInSurah}
           arabic={verse.arabic}
           translation={verse.translation}
           onAyahPress={() => setSelection({ type: 'ayah', ayahNumber: verse.numberInSurah })}
@@ -218,7 +222,6 @@ export default function SurahScreen() {
             openComposer();
           }}
           wordHasNotes={wordNoteMap.get(verse.numberInSurah) ?? new Set<number>()}
-          ayahNoteCount={ayahNoteCounts.get(verse.numberInSurah) ?? 0}
         />
       ))}
 
@@ -266,44 +269,81 @@ const styles = StyleSheet.create({
   },
   ayahCard: {
     backgroundColor: palette.white,
-    padding: 12,
-    borderRadius: 10,
-    gap: 8,
+    padding: 16,
+    borderRadius: 16,
+    gap: 12,
   },
-  arabic: {
-    fontSize: 22,
+  ayahHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  ayahNumberBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: palette.forest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ayahNumberText: {
+    color: palette.white,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  ayahNoteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: palette.sand,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  ayahNoteButtonText: {
+    color: palette.ink,
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  arabicVerse: {
+    fontSize: 26,
     textAlign: 'right',
+    color: palette.ink,
+    lineHeight: 42,
   },
-  arabicWordsRow: {
+  translationText: {
+    fontSize: 15,
+    color: palette.smoke,
+    lineHeight: 22,
+  },
+  wordChipsRow: {
     flexDirection: 'row-reverse',
     flexWrap: 'wrap',
     gap: 8,
   },
-  wordPressable: {
+  wordChip: {
+    flexDirection: 'row',
     alignItems: 'center',
-  },
-  arabicWord: {
-    fontSize: 22,
-    color: palette.ink,
-  },
-  wordDot: {
-    marginTop: 2,
-    width: 4,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: palette.rose,
-  },
-  ayahBadge: {
-    alignSelf: 'flex-start',
+    gap: 5,
     backgroundColor: palette.sand,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
-  ayahBadgeText: {
+  wordChipActive: {
+    backgroundColor: palette.sand,
+    borderColor: palette.forest,
+  },
+  wordChipText: {
+    fontSize: 15,
+    color: palette.smoke,
+    fontWeight: '500',
+  },
+  wordChipTextActive: {
     color: palette.forest,
-    fontWeight: '600',
-    fontSize: 12,
+    fontWeight: '700',
   },
   panel: {
     backgroundColor: palette.mist,
