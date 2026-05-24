@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
-import { BookOpen, Headphones, Languages, MessageSquarePlus, Play, Type } from 'lucide-react-native';
+import { BookOpen, Bookmark, Headphones, Languages, MessageSquarePlus, Play, Type } from 'lucide-react-native';
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
@@ -16,6 +16,7 @@ import { useAudioStore } from '@/stores/audio-store';
 import { fetchSurahTafsir } from '@/data/api/tafsir';
 import { useNotes } from '@/providers/notes-provider';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
+import { useBookmarkStore } from '@/stores/bookmark-store';
 import type { NoteTag, UserNote, Verse } from '@/types/quran';
 
 type Selection =
@@ -36,6 +37,8 @@ const AyahCard = memo(function AyahCard({
   tafsir,
   onAyahPress,
   onWordPress,
+  onBookmarkPress,
+  isBookmarked,
   wordHasNotes,
   isActive,
 }: {
@@ -46,6 +49,8 @@ const AyahCard = memo(function AyahCard({
   tafsir?: string;
   onAyahPress: () => void;
   onWordPress: (wordIndex: number, wordText: string) => void;
+  onBookmarkPress: () => void;
+  isBookmarked: boolean;
   wordHasNotes: Set<number>;
   isActive: boolean;
 }) {
@@ -58,10 +63,19 @@ const AyahCard = memo(function AyahCard({
         <View style={styles.ayahNumberBadge}>
           <Text style={styles.ayahNumberText}>{ayahNumber}</Text>
         </View>
-        <Pressable style={styles.ayahNoteButton} onPress={onAyahPress}>
-          <MessageSquarePlus color={palette.ink} size={15} />
-          <Text style={styles.ayahNoteButtonText}>Ayah note</Text>
-        </Pressable>
+        <View style={styles.ayahActions}>
+          <Pressable style={styles.ayahNoteButton} onPress={onAyahPress}>
+            <MessageSquarePlus color={palette.ink} size={15} />
+            <Text style={styles.ayahNoteButtonText}>Ayah note</Text>
+          </Pressable>
+          <Pressable style={styles.ayahBookmarkButton} onPress={onBookmarkPress}>
+            <Bookmark
+              color={isBookmarked ? palette.gold : palette.smoke}
+              fill={isBookmarked ? palette.gold : 'transparent'}
+              size={15}
+            />
+          </Pressable>
+        </View>
       </View>
 
       <Text style={styles.arabicVerse}>{arabic}</Text>
@@ -156,6 +170,10 @@ export default function SurahScreen() {
   const [composerInitialTags, setComposerInitialTags] = useState<NoteTag[] | undefined>(undefined);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const { notes, notesForAyah, notesForSurah, addNote, updateNote, deleteNote } = useNotes();
+  const bookmarks = useBookmarkStore((state) => state.bookmarks);
+  const addBookmark = useBookmarkStore((state) => state.addBookmark);
+  const removeBookmark = useBookmarkStore((state) => state.removeBookmark);
+  const updateProgress = useBookmarkStore((state) => state.updateProgress);
 
   useEffect(() => {
     const selectedAyah = Number(ayah);
@@ -368,12 +386,26 @@ export default function SurahScreen() {
               transliteration={item.verse.transliteration}
               tafsir={item.verse.tafsir}
               onAyahPress={() => {
-                setSelection({ type: 'ayah', ayahNumber: item.verse.numberInSurah });
+                const ayahNumber = item.verse.numberInSurah;
+                updateProgress(surahNumber, ayahNumber);
+                setSelection({ type: 'ayah', ayahNumber });
                 openComposer();
               }}
               onWordPress={(wordIndex, wordText) => {
                 setSelection({ type: 'word', ayahNumber: item.verse.numberInSurah, wordIndex, wordText });
                 openComposer();
+              }}
+              isBookmarked={bookmarks.some((bookmark) => bookmark.surahNumber === surahNumber && bookmark.ayahNumber === item.verse.numberInSurah)}
+              onBookmarkPress={() => {
+                const ayahNumber = item.verse.numberInSurah;
+                const alreadyBookmarked = bookmarks.some((bookmark) => bookmark.surahNumber === surahNumber && bookmark.ayahNumber === ayahNumber);
+                updateProgress(surahNumber, ayahNumber);
+                if (alreadyBookmarked) {
+                  removeBookmark(surahNumber, ayahNumber);
+                  return;
+                }
+
+                addBookmark(surahNumber, ayahNumber);
               }}
               wordHasNotes={wordNoteMap.get(item.verse.numberInSurah) ?? new Set<number>()}
               isActive={currentSurah === surahNumber && currentAyah === item.verse.numberInSurah}
@@ -494,6 +526,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 14,
   },
+  ayahActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   ayahNoteButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -507,6 +544,16 @@ const styles = StyleSheet.create({
     color: palette.ink,
     fontWeight: '600',
     fontSize: 13,
+  },
+  ayahBookmarkButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: palette.mist,
+    borderWidth: 1,
+    borderColor: palette.border,
   },
   arabicVerse: {
     fontSize: 26,

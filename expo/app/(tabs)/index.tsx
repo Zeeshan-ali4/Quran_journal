@@ -12,11 +12,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Search, Sparkles } from 'lucide-react-native';
+import { ChevronRight, Search, Sparkles } from 'lucide-react-native';
 
 import { SurahListItem } from '@/components/surah-list-item';
 import { palette } from '@/constants/colors';
 import { fetchSurahList } from '@/data/api/quran';
+import { useBookmarkStore } from '@/stores/bookmark-store';
 import type { SurahSummary } from '@/types/quran';
 
 export default function ReadScreen() {
@@ -27,6 +28,11 @@ export default function ReadScreen() {
     queryKey: ['surahs'],
     queryFn: fetchSurahList,
   });
+
+  const bookmarks = useBookmarkStore((state) => state.bookmarks);
+  const recentlyRead = useBookmarkStore((state) => state.recentlyRead);
+
+  const recentProgress = useMemo(() => recentlyRead(), [recentlyRead, surahsQuery.data]);
 
   const filteredSurahs = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -83,6 +89,33 @@ export default function ReadScreen() {
           />
         </View>
 
+
+        {recentProgress.length > 0 ? (
+          <>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Continue Reading</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.continueRow}>
+              {recentProgress.slice(0, 3).map((entry) => {
+                const surahName = surahsQuery.data?.find((surah) => surah.number === entry.surahNumber)?.englishName ?? `Surah ${entry.surahNumber}`;
+                return (
+                  <Pressable
+                    key={`continue-${entry.surahNumber}`}
+                    style={styles.continueCard}
+                    onPress={() => router.push(`/surah/${entry.surahNumber}`)}
+                  >
+                    <View style={styles.continueCardTextWrap}>
+                      <Text style={styles.continueTitle}>{surahName}</Text>
+                      <Text style={styles.continueSubtitle}>Ayah {entry.lastAyah}</Text>
+                    </View>
+                    <ChevronRight color={palette.smoke} size={18} />
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </>
+        ) : null}
+
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Surah library</Text>
           <Text style={styles.sectionMeta}>{filteredSurahs.length} chapters</Text>
@@ -107,6 +140,7 @@ export default function ReadScreen() {
               <SurahListItem
                 key={surah.number}
                 surah={surah}
+                hasBookmark={bookmarks.some((bookmark) => bookmark.surahNumber === surah.number)}
                 onPress={() => router.push(`/surah/${surah.number}`)}
               />
             ))
@@ -213,6 +247,37 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   sectionMeta: {
+    color: palette.smoke,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  continueRow: {
+    gap: 10,
+    paddingRight: 4,
+  },
+  continueCard: {
+    width: 180,
+    borderRadius: 18,
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  continueCardTextWrap: {
+    flex: 1,
+    gap: 4,
+  },
+  continueTitle: {
+    color: palette.ink,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  continueSubtitle: {
     color: palette.smoke,
     fontSize: 13,
     fontWeight: '600',
