@@ -1,7 +1,7 @@
 import { useLocalSearchParams } from 'expo-router';
 import { MessageSquarePlus, Type } from 'lucide-react-native';
-import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { memo, useMemo, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
 import { NoteCard } from '@/components/note-card';
@@ -10,14 +10,19 @@ import { palette } from '@/constants/colors';
 import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
 import { useNotes } from '@/providers/notes-provider';
-import type { NoteTag, UserNote } from '@/types/quran';
+import type { NoteTag, UserNote, Verse } from '@/types/quran';
 
 type Selection =
   | { type: 'surah' }
   | { type: 'ayah'; ayahNumber: number }
   | { type: 'word'; ayahNumber: number; wordIndex: number; wordText: string };
 
-function AyahCard({
+type SurahListItem =
+  | { type: 'chapterNotes' }
+  | { type: 'verse'; verse: Verse }
+  | { type: 'ayahNotes' };
+
+const AyahCard = memo(function AyahCard({
   ayahNumber,
   arabic,
   translation,
@@ -66,7 +71,7 @@ function AyahCard({
       </View>
     </View>
   );
-}
+});
 
 function ReflectionPanel({ selectedAyah, onPromptPress, onOpenComposer }: {
   selectedAyah: number;
@@ -139,6 +144,16 @@ export default function SurahScreen() {
     return map;
   }, [notes, surahNumber]);
 
+  const listData = useMemo<SurahListItem[]>(() => {
+    const verses = query.data?.verses ?? [];
+    const items: SurahListItem[] = [{ type: 'chapterNotes' }];
+    verses.forEach((verse) => {
+      items.push({ type: 'verse', verse });
+    });
+    items.push({ type: 'ayahNotes' });
+    return items;
+  }, [query.data?.verses]);
+
   const openComposer = () => {
     setEditingNoteId(null);
     setComposerInitialContent('');
@@ -190,52 +205,74 @@ export default function SurahScreen() {
   };
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
+    <>
+      <FlatList
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+        data={listData}
+        keyExtractor={(item) => (item.type === 'verse' ? `verse-${item.verse.numberInSurah}` : item.type)}
+        initialNumToRender={8}
+        windowSize={7}
+        maxToRenderPerBatch={6}
+        updateCellsBatchingPeriod={30}
+        removeClippedSubviews
+        renderItem={({ item }) => {
+          if (item.type === 'chapterNotes') {
+            return (
+              <>
+                <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
+                <View style={styles.panel}>
+                  <Text style={styles.title}>Chapter Notes</Text>
+                  <Pressable
+                    onPress={() => {
+                      setSelection({ type: 'surah' });
+                      openComposer();
+                    }}
+                  >
+                    <Text style={styles.buttonText}>+ Add chapter note</Text>
+                  </Pressable>
+                  {chapterNotes.map((note) => (
+                    <NoteRow key={note.id}>
+                      <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
+                    </NoteRow>
+                  ))}
+                </View>
+              </>
+            );
+          }
 
-      <View style={styles.panel}>
-        <Text style={styles.title}>Chapter Notes</Text>
-        <Pressable
-          onPress={() => {
-            setSelection({ type: 'surah' });
-            openComposer();
-          }}
-        >
-          <Text style={styles.buttonText}>+ Add chapter note</Text>
-        </Pressable>
-        {chapterNotes.map((note) => (
-          <NoteRow key={note.id}>
-            <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
-          </NoteRow>
-        ))}
-      </View>
+          if (item.type === 'ayahNotes') {
+            if (selection.type !== 'ayah') {
+              return null;
+            }
 
-      {query.data?.verses.map((verse) => (
-        <AyahCard
-          key={verse.numberInSurah}
-          ayahNumber={verse.numberInSurah}
-          arabic={verse.arabic}
-          translation={verse.translation}
-          onAyahPress={() => setSelection({ type: 'ayah', ayahNumber: verse.numberInSurah })}
-          onWordPress={(wordIndex, wordText) => {
-            setSelection({ type: 'word', ayahNumber: verse.numberInSurah, wordIndex, wordText });
-            openComposer();
-          }}
-          wordHasNotes={wordNoteMap.get(verse.numberInSurah) ?? new Set<number>()}
-        />
-      ))}
+            return (
+              <>
+                <ReflectionPanel selectedAyah={selection.ayahNumber} onPromptPress={handlePromptPress} onOpenComposer={openComposer} />
+                {selectedNotes.map((note) => (
+                  <NoteRow key={note.id}>
+                    <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
+                  </NoteRow>
+                ))}
+              </>
+            );
+          }
 
-      {selection.type === 'ayah' ? (
-        <>
-          <ReflectionPanel selectedAyah={selection.ayahNumber} onPromptPress={handlePromptPress} onOpenComposer={openComposer} />
-
-          {selectedNotes.map((note) => (
-            <NoteRow key={note.id}>
-              <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
-            </NoteRow>
-          ))}
-        </>
-      ) : null}
+          return (
+            <AyahCard
+              ayahNumber={item.verse.numberInSurah}
+              arabic={item.verse.arabic}
+              translation={item.verse.translation}
+              onAyahPress={() => setSelection({ type: 'ayah', ayahNumber: item.verse.numberInSurah })}
+              onWordPress={(wordIndex, wordText) => {
+                setSelection({ type: 'word', ayahNumber: item.verse.numberInSurah, wordIndex, wordText });
+                openComposer();
+              }}
+              wordHasNotes={wordNoteMap.get(item.verse.numberInSurah) ?? new Set<number>()}
+            />
+          );
+        }}
+      />
 
       <NoteComposer
         visible={composerVisible}
@@ -250,7 +287,7 @@ export default function SurahScreen() {
         onClose={() => setComposerVisible(false)}
         onSave={handleSaveNote}
       />
-    </ScrollView>
+    </>
   );
 }
 
@@ -262,6 +299,7 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     gap: 10,
+    paddingBottom: 32,
   },
   heading: {
     fontSize: 24,
