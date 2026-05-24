@@ -1,15 +1,17 @@
 import { useLocalSearchParams } from 'expo-router';
-import { MessageSquarePlus, Type } from 'lucide-react-native';
+import { Languages, MessageSquarePlus, Type } from 'lucide-react-native';
 import React, { memo, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
 import { NoteCard } from '@/components/note-card';
 import { NoteComposer } from '@/components/note-composer';
+import { TranslationPicker } from '@/components/translation-picker';
 import { palette } from '@/constants/colors';
 import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
 import { useNotes } from '@/providers/notes-provider';
+import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
 import type { NoteTag, UserNote, Verse } from '@/types/quran';
 
 type Selection =
@@ -26,6 +28,7 @@ const AyahCard = memo(function AyahCard({
   ayahNumber,
   arabic,
   translation,
+  transliteration,
   onAyahPress,
   onWordPress,
   wordHasNotes,
@@ -33,6 +36,7 @@ const AyahCard = memo(function AyahCard({
   ayahNumber: number;
   arabic: string;
   translation: string;
+  transliteration?: string;
   onAyahPress: () => void;
   onWordPress: (wordIndex: number, wordText: string) => void;
   wordHasNotes: Set<number>;
@@ -52,6 +56,7 @@ const AyahCard = memo(function AyahCard({
       </View>
 
       <Text style={styles.arabicVerse}>{arabic}</Text>
+      {transliteration ? <Text style={styles.transliterationText}>{transliteration}</Text> : null}
       <Text style={styles.translationText}>{translation}</Text>
 
       <View style={styles.wordChipsRow}>
@@ -102,10 +107,15 @@ function NoteRow({ children }: { children: React.ReactNode }) {
 export default function SurahScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const surahNumber = Number(id || 1);
+  const { translationId, showTransliteration } = useQuranSettingsStore();
+  const [pickerVisible, setPickerVisible] = useState(false);
+
   const query = useQuery({
-    queryKey: ['surah', surahNumber],
-    queryFn: () => fetchSurahDetail(surahNumber),
+    queryKey: ['surah', surahNumber, translationId, showTransliteration],
+    queryFn: () => fetchSurahDetail(surahNumber, translationId, showTransliteration),
   });
+
+  const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
 
   const [selection, setSelection] = useState<Selection>({ type: 'surah' });
   const [composerVisible, setComposerVisible] = useState(false);
@@ -220,7 +230,13 @@ export default function SurahScreen() {
           if (item.type === 'chapterNotes') {
             return (
               <>
-                <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
+                <View style={styles.surahHeader}>
+                  <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
+                  <Pressable style={styles.translationButton} onPress={() => setPickerVisible(true)}>
+                    <Languages color={palette.forest} size={15} />
+                    <Text style={styles.translationButtonText}>{activeTranslationLabel}</Text>
+                  </Pressable>
+                </View>
                 <View style={styles.panel}>
                   <Text style={styles.title}>Chapter Notes</Text>
                   <Pressable
@@ -263,6 +279,7 @@ export default function SurahScreen() {
               ayahNumber={item.verse.numberInSurah}
               arabic={item.verse.arabic}
               translation={item.verse.translation}
+              transliteration={item.verse.transliteration}
               onAyahPress={() => setSelection({ type: 'ayah', ayahNumber: item.verse.numberInSurah })}
               onWordPress={(wordIndex, wordText) => {
                 setSelection({ type: 'word', ayahNumber: item.verse.numberInSurah, wordIndex, wordText });
@@ -273,6 +290,8 @@ export default function SurahScreen() {
           );
         }}
       />
+
+      <TranslationPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
 
       <NoteComposer
         visible={composerVisible}
@@ -301,9 +320,36 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingBottom: 32,
   },
+  surahHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   heading: {
     fontSize: 24,
     fontWeight: '700',
+  },
+  translationButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: palette.mist,
+    borderWidth: 1,
+    borderColor: palette.border,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  translationButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: palette.forest,
+  },
+  transliterationText: {
+    fontSize: 13,
+    color: palette.smoke,
+    fontStyle: 'italic',
+    lineHeight: 20,
   },
   ayahCard: {
     backgroundColor: palette.white,
