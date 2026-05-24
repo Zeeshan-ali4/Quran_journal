@@ -289,7 +289,10 @@ export default function SurahScreen() {
               arabic={item.verse.arabic}
               translation={item.verse.translation}
               transliteration={item.verse.transliteration}
-              onAyahPress={() => setSelection({ type: 'ayah', ayahNumber: item.verse.numberInSurah })}
+              onAyahPress={() => {
+                setSelection({ type: 'ayah', ayahNumber: item.verse.numberInSurah });
+                openComposer();
+              }}
               onWordPress={(wordIndex, wordText) => {
                 setSelection({ type: 'word', ayahNumber: item.verse.numberInSurah, wordIndex, wordText });
                 openComposer();
