@@ -15,14 +15,26 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.quranjournal.app"
+      "bundleIdentifier": "com.quranjournal.app",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSExceptionDomains": {
+            "api.quran-tafseer.com": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSIncludesSubdomains": true
+            }
+          }
+        }
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.quranjournal.app"
+      "package": "com.quranjournal.app",
+      "usesCleartextTraffic": true
     },
     "web": {
       "favicon": "./assets/images/favicon.png"

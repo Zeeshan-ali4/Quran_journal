@@ -15,8 +15,12 @@ export const TRANSLATIONS: { id: TranslationId; label: string; author: string }[
 interface QuranSettingsStore {
   translationId: TranslationId;
   showTransliteration: boolean;
+  showTafsir: boolean;
+  tafsirId: number;
   setTranslation: (id: TranslationId) => void;
   setShowTransliteration: (value: boolean) => void;
+  setShowTafsir: (show: boolean) => void;
+  setTafsirId: (id: number) => void;
 }
 
 export const useQuranSettingsStore = create<QuranSettingsStore>()(
@@ -24,8 +28,12 @@ export const useQuranSettingsStore = create<QuranSettingsStore>()(
     (set) => ({
       translationId: 'bundled',
       showTransliteration: false,
+      showTafsir: false,
+      tafsirId: 101,
       setTranslation: (id) => set({ translationId: id }),
       setShowTransliteration: (value) => set({ showTransliteration: value }),
+      setShowTafsir: (show) => set({ showTafsir: show }),
+      setTafsirId: (id) => set({ tafsirId: id }),
     }),
     { name: 'quran-journal-settings', storage: createJSONStorage(() => AsyncStorage) }
   )
