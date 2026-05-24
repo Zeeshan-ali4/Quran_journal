@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronRight } from 'lucide-react-native';
+import { Bookmark, ChevronRight } from 'lucide-react-native';
 
 import { palette } from '@/constants/colors';
 import type { SurahSummary } from '@/types/quran';
@@ -8,9 +8,10 @@ import type { SurahSummary } from '@/types/quran';
 interface SurahListItemProps {
   surah: SurahSummary;
   onPress: () => void;
+  hasBookmark?: boolean;
 }
 
-export function SurahListItem({ surah, onPress }: SurahListItemProps) {
+export function SurahListItem({ surah, onPress, hasBookmark = false }: SurahListItemProps) {
   return (
     <Pressable onPress={onPress} style={styles.card} testID={`surah-card-${surah.number}`}>
       <View style={styles.numberBadge}>
@@ -27,7 +28,10 @@ export function SurahListItem({ surah, onPress }: SurahListItemProps) {
       </View>
       <View style={styles.rightColumn}>
         <Text style={styles.arabic}>{surah.name}</Text>
-        <ChevronRight color={palette.smoke} size={18} />
+        <View style={styles.trailingIcons}>
+          {hasBookmark ? <Bookmark color={palette.gold} size={12} fill={palette.gold} /> : null}
+          <ChevronRight color={palette.smoke} size={18} />
+        </View>
       </View>
     </Pressable>
   );
@@ -93,6 +97,11 @@ const styles = StyleSheet.create({
   rightColumn: {
     alignItems: 'flex-end',
     gap: 10,
+  },
+  trailingIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   arabic: {
     color: palette.ink,
