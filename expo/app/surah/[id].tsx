@@ -58,7 +58,7 @@ const AyahCard = memo(function AyahCard({
   const [tafsirExpanded, setTafsirExpanded] = useState(false);
 
   return (
-    <View style={[styles.ayahCard, isActive ? styles.ayahCardActive : null]}>
+    <View style={[styles.ayahCard, isActive ? styles.ayahCardActive : null, isBookmarked ? styles.ayahCardBookmarked : null]}>
       <View style={styles.ayahHeader}>
         <View style={styles.ayahNumberBadge}>
           <Text style={styles.ayahNumberText}>{ayahNumber}</Text>
@@ -170,9 +170,9 @@ export default function SurahScreen() {
   const [composerInitialTags, setComposerInitialTags] = useState<NoteTag[] | undefined>(undefined);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const { notes, notesForAyah, notesForSurah, addNote, updateNote, deleteNote } = useNotes();
-  const bookmarks = useBookmarkStore((state) => state.bookmarks);
   const addBookmark = useBookmarkStore((state) => state.addBookmark);
   const removeBookmark = useBookmarkStore((state) => state.removeBookmark);
+  const isBookmarked = useBookmarkStore((state) => state.isBookmarked);
   const updateProgress = useBookmarkStore((state) => state.updateProgress);
 
   useEffect(() => {
@@ -238,6 +238,14 @@ export default function SurahScreen() {
       listRef.current?.scrollToIndex({ index: currentAyah, animated: true, viewPosition: 0.2 });
     } catch {}
   }, [currentAyah, currentSurah, surahNumber]);
+
+  useEffect(() => {
+    const target = Number(ayah);
+    if (!Number.isFinite(target) || target <= 0 || !query.data) return;
+    try {
+      listRef.current?.scrollToIndex({ index: target, animated: true, viewPosition: 0.2 });
+    } catch {}
+  }, [ayah, query.data]);
 
   const openComposer = () => {
     setEditingNoteId(null);
@@ -395,17 +403,17 @@ export default function SurahScreen() {
                 setSelection({ type: 'word', ayahNumber: item.verse.numberInSurah, wordIndex, wordText });
                 openComposer();
               }}
-              isBookmarked={bookmarks.some((bookmark) => bookmark.surahNumber === surahNumber && bookmark.ayahNumber === item.verse.numberInSurah)}
+              isBookmarked={isBookmarked(surahNumber, item.verse.numberInSurah)}
               onBookmarkPress={() => {
                 const ayahNumber = item.verse.numberInSurah;
-                const alreadyBookmarked = bookmarks.some((bookmark) => bookmark.surahNumber === surahNumber && bookmark.ayahNumber === ayahNumber);
+                const alreadyBookmarked = isBookmarked(surahNumber, ayahNumber);
                 updateProgress(surahNumber, ayahNumber);
                 if (alreadyBookmarked) {
                   removeBookmark(surahNumber, ayahNumber);
                   return;
                 }
 
-                addBookmark(surahNumber, ayahNumber);
+                addBookmark(surahNumber, query.data?.englishName ?? '', ayahNumber);
               }}
               wordHasNotes={wordNoteMap.get(item.verse.numberInSurah) ?? new Set<number>()}
               isActive={currentSurah === surahNumber && currentAyah === item.verse.numberInSurah}
@@ -507,6 +515,11 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: palette.gold,
     backgroundColor: 'rgba(196, 154, 83, 0.15)',
+  },
+  ayahCardBookmarked: {
+    backgroundColor: 'rgba(196, 154, 83, 0.12)',
+    borderLeftWidth: 3,
+    borderLeftColor: palette.gold,
   },
   ayahHeader: {
     flexDirection: 'row',

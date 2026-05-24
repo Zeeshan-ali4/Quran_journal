@@ -1,6 +1,6 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
-import { BookOpenText, NotebookText } from 'lucide-react-native';
+import { BookOpenText, Bookmark, NotebookText } from 'lucide-react-native';
 
 import Colors from '@/constants/colors';
 
@@ -25,6 +25,13 @@ export default function TabLayout() {
         options={{
           title: 'Notes',
           tabBarIcon: ({ color, size }) => <NotebookText color={color} size={size} />,
+        }}
+      />
+      <Tabs.Screen
+        name="bookmarks"
+        options={{
+          title: 'Bookmarks',
+          tabBarIcon: ({ color, size }) => <Bookmark color={color} size={size} />,
         }}
       />
     </Tabs>
