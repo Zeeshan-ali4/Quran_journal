@@ -34,7 +34,7 @@ export default function NotesScreen() {
           onChangeText={setQuery}
         />
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScrollView} contentContainerStyle={styles.filterRow}>
           <Pressable
             style={[styles.filterPill, activeTag === null && styles.filterPillActive]}
             onPress={() => setActiveTag(null)}
@@ -114,9 +114,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
   },
+  filterScrollView: {
+    maxHeight: 44,
+  },
   filterRow: {
     flexDirection: 'row',
     gap: 8,
+    alignItems: 'center'
   },
   filterPill: {
     borderRadius: 999,
