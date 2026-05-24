@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { router } from 'expo-router';
+import { Trash2 } from 'lucide-react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { palette } from '@/constants/colors';
 import { useNotes } from '@/providers/notes-provider';
 
 export default function NotesScreen() {
-  const { searchNotes, isLoading } = useNotes();
+  const { searchNotes, isLoading, deleteNote } = useNotes();
   const [query, setQuery] = useState('');
   const results = searchNotes(query);
 
@@ -26,13 +28,22 @@ export default function NotesScreen() {
         <Text style={styles.emptyText}>No notes yet. Open a surah and tap an ayah to reflect.</Text>
       ) : (
         results.map((note) => (
-          <View key={note.id} style={styles.card}>
-            <Text style={styles.metaText}>
-              Surah {note.surahNumber} Ayah {note.ayahNumber}
-            </Text>
+          <Pressable
+            key={note.id}
+            style={styles.card}
+            onPress={() => router.push({ pathname: '/surah/[id]', params: { id: String(note.surahNumber), ayah: note.ayahNumber ? String(note.ayahNumber) : undefined } })}
+          >
+            <View style={styles.cardHeader}>
+              <Text style={styles.metaText}>
+                Surah {note.surahNumber}{note.ayahNumber ? ` Ayah ${note.ayahNumber}` : ''}
+              </Text>
+              <Pressable onPress={() => void deleteNote(note.id)} hitSlop={8}>
+                <Trash2 size={16} color={palette.smoke} />
+              </Pressable>
+            </View>
             <Text>{note.content}</Text>
             <Text style={styles.metaText}>{note.tags.join(', ') || 'untagged'}</Text>
-          </View>
+          </Pressable>
         ))
       )}
     </ScrollView>
@@ -60,6 +71,11 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 12,
     gap: 6,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   metaText: {
     color: palette.smoke,

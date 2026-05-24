@@ -1,6 +1,6 @@
 import { useLocalSearchParams } from 'expo-router';
 import { Languages, MessageSquarePlus, Type } from 'lucide-react-native';
-import React, { memo, useMemo, useState } from 'react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
@@ -105,7 +105,7 @@ function NoteRow({ children }: { children: React.ReactNode }) {
 }
 
 export default function SurahScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, ayah } = useLocalSearchParams<{ id: string; ayah?: string }>();
   const surahNumber = Number(id || 1);
   const { translationId, showTransliteration } = useQuranSettingsStore();
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -123,6 +123,15 @@ export default function SurahScreen() {
   const [composerInitialTags, setComposerInitialTags] = useState<NoteTag[] | undefined>(undefined);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const { notes, notesForAyah, notesForSurah, addNote, updateNote, deleteNote } = useNotes();
+
+  useEffect(() => {
+    const selectedAyah = Number(ayah);
+    if (Number.isFinite(selectedAyah) && selectedAyah > 0) {
+      setSelection({ type: 'ayah', ayahNumber: selectedAyah });
+    } else {
+      setSelection({ type: 'surah' });
+    }
+  }, [ayah, surahNumber]);
 
   const chapterNotes = useMemo(() => notesForSurah(surahNumber), [notesForSurah, surahNumber]);
   const selectedNotes = useMemo(() => {
