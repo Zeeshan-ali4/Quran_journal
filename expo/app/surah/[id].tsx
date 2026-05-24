@@ -69,7 +69,11 @@ const AyahCard = memo(function AyahCard({
           <Pressable style={styles.tafsirToggle} onPress={() => setTafsirExpanded((prev) => !prev)}>
             <Text style={styles.tafsirLabel}>Tafsir {tafsirExpanded ? '▲' : '▼'}</Text>
           </Pressable>
-          {tafsirExpanded ? <Text style={styles.tafsirBody}>{tafsir}</Text> : null}
+          {tafsirExpanded ? (
+            <Pressable onPress={() => setTafsirExpanded(false)}>
+              <Text style={styles.tafsirBody}>{tafsir}</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
