@@ -3,15 +3,9 @@ import React, { useEffect, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { palette } from '@/constants/colors';
-import { fetchAvailableTafsirs } from '@/data/api/tafsir';
+import { fetchAvailableTafsirs, type TafsirMeta } from '@/data/api/tafsir';
 import { useQuranSettingsStore } from '@/stores/quran-settings-store';
 
-interface TafsirMeta {
-  id: number;
-  name: string;
-  language: string;
-  author: string;
-}
 
 interface TafsirPickerProps {
   visible: boolean;
@@ -19,7 +13,7 @@ interface TafsirPickerProps {
 }
 
 export function TafsirPicker({ visible, onClose }: TafsirPickerProps) {
-  const { tafsirId, showTafsir, setTafsirId, setShowTafsir } = useQuranSettingsStore();
+  const { tafsirSlug, showTafsir, setTafsirSlug, setShowTafsir } = useQuranSettingsStore();
   const [tafseers, setTafseers] = useState<TafsirMeta[]>([]);
 
   useEffect(() => {
@@ -60,16 +54,16 @@ export function TafsirPicker({ visible, onClose }: TafsirPickerProps) {
         {tafseers.map((tafsir) => (
           <Pressable
             key={tafsir.id}
-            style={[styles.option, tafsirId === tafsir.id && styles.optionSelected]}
-            onPress={() => setTafsirId(tafsir.id)}
+            style={[styles.option, tafsirSlug === tafsir.id && styles.optionSelected]}
+            onPress={() => setTafsirSlug(tafsir.id)}
           >
             <View style={styles.optionText}>
-              <Text style={[styles.optionLabel, tafsirId === tafsir.id && styles.optionLabelSelected]}>
+              <Text style={[styles.optionLabel, tafsirSlug === tafsir.id && styles.optionLabelSelected]}>
                 {tafsir.name}
               </Text>
               <Text style={styles.optionAuthor}>{tafsir.author}</Text>
             </View>
-            {tafsirId === tafsir.id && <Check color={palette.forest} size={18} />}
+            {tafsirSlug === tafsir.id && <Check color={palette.forest} size={18} />}
           </Pressable>
         ))}
       </View>
