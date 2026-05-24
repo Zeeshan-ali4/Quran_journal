@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 export interface BookmarkEntry {
   surahNumber: number;
+  surahName: string;
   ayahNumber: number;
   savedAt: string;
 }
@@ -17,7 +18,7 @@ export interface ReadingProgressEntry {
 interface BookmarkStore {
   bookmarks: BookmarkEntry[];
   progress: ReadingProgressEntry[];
-  addBookmark: (surahNumber: number, ayahNumber: number) => void;
+  addBookmark: (surahNumber: number, surahName: string, ayahNumber: number) => void;
   removeBookmark: (surahNumber: number, ayahNumber: number) => void;
   isBookmarked: (surahNumber: number, ayahNumber: number) => boolean;
   updateProgress: (surahNumber: number, ayahNumber: number) => void;
@@ -30,7 +31,7 @@ export const useBookmarkStore = create<BookmarkStore>()(
     (set, get) => ({
       bookmarks: [],
       progress: [],
-      addBookmark: (surahNumber, ayahNumber) =>
+      addBookmark: (surahNumber, surahName, ayahNumber) =>
         set((state) => {
           const exists = state.bookmarks.some(
             (bookmark) => bookmark.surahNumber === surahNumber && bookmark.ayahNumber === ayahNumber
@@ -42,7 +43,7 @@ export const useBookmarkStore = create<BookmarkStore>()(
 
           return {
             bookmarks: [
-              { surahNumber, ayahNumber, savedAt: new Date().toISOString() },
+              { surahNumber, surahName, ayahNumber, savedAt: new Date().toISOString() },
               ...state.bookmarks,
             ],
           };
