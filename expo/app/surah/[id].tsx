@@ -310,6 +310,12 @@ export default function SurahScreen() {
         maxToRenderPerBatch={6}
         updateCellsBatchingPeriod={30}
         removeClippedSubviews
+        onScrollToIndexFailed={({ index }) => {
+          listRef.current?.scrollToOffset({
+            offset: index * 200,
+            animated: true,
+          });
+        }}
         renderItem={({ item }) => {
           if (item.type === 'chapterNotes') {
             return (
