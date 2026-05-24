@@ -37,9 +37,13 @@ function AyahCard({
     <View style={styles.ayahCard}>
       <View style={styles.arabicWordsRow}>
         {words.map((word, wordIndex) => (
-          <Pressable key={`${word}-${wordIndex}`} style={styles.wordPressable} onPress={() => onWordPress(wordIndex, word)}>
+          <Pressable key={`${word}-${wordIndex}`} style={[styles.wordChip, wordHasNotes.has(wordIndex) && styles.wordChipAnnotated]} onPress={() => onWordPress(wordIndex, word)}>
             <Text style={styles.arabicWord}>{word}</Text>
-            {wordHasNotes.has(wordIndex) ? <View style={styles.wordDot} /> : null}
+            {wordHasNotes.has(wordIndex) ? (
+              <View style={styles.wordNoteBadge}>
+                <Text style={styles.wordNoteBadgeText}>1</Text>
+              </View>
+            ) : null}
           </Pressable>
         ))}
       </View>
@@ -279,19 +283,33 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
-  wordPressable: {
+  wordChip: {
     alignItems: 'center',
+    position: 'relative',
+    backgroundColor: palette.white,
+    borderWidth: 1,
+    borderColor: palette.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  wordChipAnnotated: {
+    backgroundColor: palette.sand,
+    borderColor: palette.forest,
   },
   arabicWord: {
     fontSize: 22,
     color: palette.ink,
   },
-  wordDot: {
-    marginTop: 2,
-    width: 4,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: palette.rose,
+  wordNoteBadge: {
+    position: 'absolute',
+    right: 2,
+    bottom: 1,
+  },
+  wordNoteBadgeText: {
+    color: palette.rose,
+    fontSize: 10,
+    fontWeight: '700',
   },
   ayahBadge: {
     alignSelf: 'flex-start',
