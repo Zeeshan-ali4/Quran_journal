@@ -6,6 +6,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppErrorBoundary } from '@/components/app-error-boundary';
 import { NotesProvider } from '@/providers/notes-provider';
@@ -20,5 +21,5 @@ function RootLayoutNav() { return <Stack screenOptions={{ headerBackTitle: 'Back
 
 export default function RootLayout() {
   useEffect(() => { void SplashScreen.hideAsync(); }, []);
-  return <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}><GestureHandlerRootView style={{ flex: 1 }}><ThemeProvider><NotesProvider><AppErrorBoundary><RootLayoutNav /></AppErrorBoundary></NotesProvider></ThemeProvider></GestureHandlerRootView></PersistQueryClientProvider>;
+  return <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}><GestureHandlerRootView style={{ flex: 1 }}><SafeAreaProvider><SafeAreaView style={{ flex: 1 }} edges={[ 'top' ]}><ThemeProvider><NotesProvider><AppErrorBoundary><RootLayoutNav /></AppErrorBoundary></NotesProvider></ThemeProvider></SafeAreaView></SafeAreaProvider></GestureHandlerRootView></PersistQueryClientProvider>;
 }
