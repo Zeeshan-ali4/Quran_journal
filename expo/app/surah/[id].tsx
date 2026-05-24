@@ -121,7 +121,7 @@ function NoteRow({ children }: { children: React.ReactNode }) {
 export default function SurahScreen() {
   const { id, ayah } = useLocalSearchParams<{ id: string; ayah?: string }>();
   const surahNumber = Number(id || 1);
-  const { translationId, showTransliteration, showTafsir, tafsirId } = useQuranSettingsStore();
+  const { translationId, showTransliteration, showTafsir, tafsirSlug } = useQuranSettingsStore();
   const [pickerVisible, setPickerVisible] = useState(false);
   const [tafsirPickerVisible, setTafsirPickerVisible] = useState(false);
 
@@ -133,8 +133,8 @@ export default function SurahScreen() {
   const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
 
   const { data: tafsirTexts } = useQuery({
-    queryKey: ['tafsir', surahNumber, tafsirId],
-    queryFn: () => fetchSurahTafsir(tafsirId, surahNumber, query.data?.verses.length ?? 0),
+    queryKey: ['tafsir', surahNumber, tafsirSlug],
+    queryFn: () => fetchSurahTafsir(tafsirSlug, surahNumber, query.data?.verses.length ?? 0),
     enabled: showTafsir && (query.data?.verses.length ?? 0) > 0,
     staleTime: Infinity,
   });
