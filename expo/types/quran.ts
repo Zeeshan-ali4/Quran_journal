@@ -12,6 +12,7 @@ export interface Verse {
   arabic: string;
   translation: string;
   transliteration?: string;
+  tafsir?: string;
 }
 
 export interface SurahDetail extends SurahSummary {

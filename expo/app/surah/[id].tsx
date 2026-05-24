@@ -1,15 +1,17 @@
 import { useLocalSearchParams } from 'expo-router';
-import { Languages, MessageSquarePlus, Type } from 'lucide-react-native';
+import { BookOpen, Languages, MessageSquarePlus, Type } from 'lucide-react-native';
 import React, { memo, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
 import { NoteCard } from '@/components/note-card';
 import { NoteComposer } from '@/components/note-composer';
+import { TafsirPicker } from '@/components/tafsir-picker';
 import { TranslationPicker } from '@/components/translation-picker';
 import { palette } from '@/constants/colors';
 import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
+import { fetchSurahTafsir } from '@/data/api/tafsir';
 import { useNotes } from '@/providers/notes-provider';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
 import type { NoteTag, UserNote, Verse } from '@/types/quran';
@@ -29,6 +31,7 @@ const AyahCard = memo(function AyahCard({
   arabic,
   translation,
   transliteration,
+  tafsir,
   onAyahPress,
   onWordPress,
   wordHasNotes,
@@ -37,11 +40,13 @@ const AyahCard = memo(function AyahCard({
   arabic: string;
   translation: string;
   transliteration?: string;
+  tafsir?: string;
   onAyahPress: () => void;
   onWordPress: (wordIndex: number, wordText: string) => void;
   wordHasNotes: Set<number>;
 }) {
   const words = useMemo(() => arabic.split(' ').filter(Boolean), [arabic]);
+  const [tafsirExpanded, setTafsirExpanded] = useState(false);
 
   return (
     <View style={styles.ayahCard}>
@@ -58,6 +63,15 @@ const AyahCard = memo(function AyahCard({
       <Text style={styles.arabicVerse}>{arabic}</Text>
       {transliteration ? <Text style={styles.transliterationText}>{transliteration}</Text> : null}
       <Text style={styles.translationText}>{translation}</Text>
+
+      {tafsir ? (
+        <View style={styles.tafsirContainer}>
+          <Pressable style={styles.tafsirToggle} onPress={() => setTafsirExpanded((prev) => !prev)}>
+            <Text style={styles.tafsirLabel}>Tafsir {tafsirExpanded ? '▲' : '▼'}</Text>
+          </Pressable>
+          {tafsirExpanded ? <Text style={styles.tafsirBody}>{tafsir}</Text> : null}
+        </View>
+      ) : null}
 
       <View style={styles.wordChipsRow}>
         {words.map((word, wordIndex) => {
@@ -107,8 +121,9 @@ function NoteRow({ children }: { children: React.ReactNode }) {
 export default function SurahScreen() {
   const { id, ayah } = useLocalSearchParams<{ id: string; ayah?: string }>();
   const surahNumber = Number(id || 1);
-  const { translationId, showTransliteration } = useQuranSettingsStore();
+  const { translationId, showTransliteration, showTafsir, tafsirId } = useQuranSettingsStore();
   const [pickerVisible, setPickerVisible] = useState(false);
+  const [tafsirPickerVisible, setTafsirPickerVisible] = useState(false);
 
   const query = useQuery({
     queryKey: ['surah', surahNumber, translationId, showTransliteration],
@@ -116,6 +131,13 @@ export default function SurahScreen() {
   });
 
   const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
+
+  const { data: tafsirTexts } = useQuery({
+    queryKey: ['tafsir', surahNumber, tafsirId],
+    queryFn: () => fetchSurahTafsir(tafsirId, surahNumber, query.data?.verses.length ?? 0),
+    enabled: showTafsir && (query.data?.verses.length ?? 0) > 0,
+    staleTime: Infinity,
+  });
 
   const [selection, setSelection] = useState<Selection>({ type: 'surah' });
   const [composerVisible, setComposerVisible] = useState(false);
@@ -165,13 +187,18 @@ export default function SurahScreen() {
 
   const listData = useMemo<SurahListItem[]>(() => {
     const verses = query.data?.verses ?? [];
+    const versesWithTafsir = verses.map((verse, index) => ({
+      ...verse,
+      tafsir: showTafsir ? tafsirTexts?.[index] : undefined,
+    }));
+
     const items: SurahListItem[] = [{ type: 'chapterNotes' }];
-    verses.forEach((verse) => {
+    versesWithTafsir.forEach((verse) => {
       items.push({ type: 'verse', verse });
     });
     items.push({ type: 'ayahNotes' });
     return items;
-  }, [query.data?.verses]);
+  }, [query.data?.verses, showTafsir, tafsirTexts]);
 
   const openComposer = () => {
     setEditingNoteId(null);
@@ -241,10 +268,21 @@ export default function SurahScreen() {
               <>
                 <View style={styles.surahHeader}>
                   <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
-                  <Pressable style={styles.translationButton} onPress={() => setPickerVisible(true)}>
-                    <Languages color={palette.forest} size={15} />
-                    <Text style={styles.translationButtonText}>{activeTranslationLabel}</Text>
-                  </Pressable>
+                  <View style={styles.headerActions}>
+                    <Pressable style={styles.translationButton} onPress={() => setPickerVisible(true)}>
+                      <Languages color={palette.forest} size={15} />
+                      <Text style={styles.translationButtonText}>{activeTranslationLabel}</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.translationButton, showTafsir ? styles.translationButtonActive : null]}
+                      onPress={() => setTafsirPickerVisible(true)}
+                    >
+                      <BookOpen color={showTafsir ? palette.forest : palette.smoke} size={15} />
+                      <Text style={[styles.translationButtonText, !showTafsir ? styles.translationButtonTextMuted : null]}>
+                        Tafsir
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
                 <View style={styles.panel}>
                   <Text style={styles.title}>Chapter Notes</Text>
@@ -289,6 +327,7 @@ export default function SurahScreen() {
               arabic={item.verse.arabic}
               translation={item.verse.translation}
               transliteration={item.verse.transliteration}
+              tafsir={item.verse.tafsir}
               onAyahPress={() => {
                 setSelection({ type: 'ayah', ayahNumber: item.verse.numberInSurah });
                 openComposer();
@@ -304,6 +343,7 @@ export default function SurahScreen() {
       />
 
       <TranslationPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
+      <TafsirPicker visible={tafsirPickerVisible} onClose={() => setTafsirPickerVisible(false)} />
 
       <NoteComposer
         visible={composerVisible}
@@ -337,6 +377,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   heading: {
     fontSize: 24,
     fontWeight: '700',
@@ -356,6 +401,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: palette.forest,
+  },
+  translationButtonActive: {
+    borderColor: palette.forest,
+  },
+  translationButtonTextMuted: {
+    color: palette.smoke,
   },
   transliterationText: {
     fontSize: 13,
@@ -411,6 +462,30 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: palette.smoke,
     lineHeight: 22,
+  },
+  tafsirContainer: {
+    borderTopWidth: 1,
+    borderTopColor: palette.border,
+    paddingTop: 10,
+    gap: 8,
+  },
+  tafsirToggle: {
+    alignSelf: 'flex-start',
+  },
+  tafsirLabel: {
+    fontSize: 11,
+    textTransform: 'uppercase',
+    color: palette.smoke,
+    letterSpacing: 0.5,
+    fontWeight: '600',
+  },
+  tafsirBody: {
+    fontSize: 13,
+    color: palette.smoke,
+    lineHeight: 20,
+    backgroundColor: palette.paper,
+    padding: 10,
+    borderRadius: 8,
   },
   wordChipsRow: {
     flexDirection: 'row-reverse',
