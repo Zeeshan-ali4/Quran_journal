@@ -22,7 +22,7 @@ export function TafsirPicker({ visible, onClose }: TafsirPickerProps) {
     }
 
     void fetchAvailableTafsirs()
-      .then((results) => setTafseers(results.filter((entry) => entry.language === 'en')))
+      .then((results) => setTafseers(results.filter((entry) => entry.language === 'english')))
       .catch(() => setTafseers([]));
   }, [tafseers.length, visible]);
 
