@@ -17,10 +17,12 @@ interface QuranSettingsStore {
   showTransliteration: boolean;
   showTafsir: boolean;
   tafsirSlug: string;
+  wordByWord: boolean;
   setTranslation: (id: TranslationId) => void;
   setShowTransliteration: (value: boolean) => void;
   setShowTafsir: (show: boolean) => void;
   setTafsirSlug: (slug: string) => void;
+  setWordByWord: (value: boolean) => void;
 }
 
 export const useQuranSettingsStore = create<QuranSettingsStore>()(
@@ -30,10 +32,12 @@ export const useQuranSettingsStore = create<QuranSettingsStore>()(
       showTransliteration: false,
       showTafsir: false,
       tafsirSlug: 'en-tafisr-ibn-kathir',
+      wordByWord: false,
       setTranslation: (id) => set({ translationId: id }),
       setShowTransliteration: (value) => set({ showTransliteration: value }),
       setShowTafsir: (show) => set({ showTafsir: show }),
       setTafsirSlug: (slug) => set({ tafsirSlug: slug }),
+      setWordByWord: (value) => set({ wordByWord: value }),
     }),
     { name: 'quran-journal-settings', storage: createJSONStorage(() => AsyncStorage) }
   )
