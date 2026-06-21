@@ -23,7 +23,10 @@ export function TafsirPicker({ visible, onClose }: TafsirPickerProps) {
 
     void fetchAvailableTafsirs()
       .then((results) => setTafseers(results.filter((entry) => entry.language === 'english')))
-      .catch(() => setTafseers([]));
+      .catch((error) => {
+        console.error('Failed to fetch tafsir list', error);
+        setTafseers([]);
+      });
   }, [tafseers.length, visible]);
 
   return (

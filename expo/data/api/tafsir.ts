@@ -20,7 +20,10 @@ interface SurahTafsirAyah {
 }
 
 export async function fetchAvailableTafsirs(): Promise<TafsirMeta[]> {
-  const response = await fetch(`${BASE}/editions.json`);
+    const response = await fetch(`${BASE}/editions.json`).catch((error) => {
+    console.error(`Network error fetching ${BASE}/editions.json`, error);
+    throw error;
+  });
 
   if (!response.ok) {
     throw new Error(`tafsir_api ${response.status} while fetching tafsir list`);
@@ -43,7 +46,11 @@ export async function fetchSurahTafsir(
   surahNumber: number,
   ayahCount: number,
 ): Promise<string[]> {
-  const response = await fetch(`${BASE}/${tafsirSlug}/${surahNumber}.json`);
+  const url = `${BASE}/${tafsirSlug}/${surahNumber}.json`;
+  const response = await fetch(url).catch((error) => {
+    console.error(`Network error fetching ${url}`, error);
+    throw error;
+  });
 
   if (!response.ok) {
     throw new Error(`tafsir_api ${response.status} for tafsir ${tafsirSlug}/surah ${surahNumber}`);

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Qur'an Notes",
     "slug": "quran-journal",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "quran-journal",
@@ -46,6 +46,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f0de73be-6d4d-43e2-8cd9-a53c36dfdc94"
+      }
     }
   }
 }
