@@ -1,0 +1,26 @@
+// Local builds require Java 17 and Android SDK installed. EAS builds require an Expo account (npx eas-cli login).
+{
+  "cli": {
+    "version": ">= 10.0.0"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  }
+}

@@ -6,7 +6,10 @@
     "start": "expo start --tunnel",
     "start-web": "expo start --web",
     "start-web-dev": "DEBUG=expo* expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "build:apk:local": "npx expo prebuild --platform android && cd android && ./gradlew assembleRelease",
+    "build:apk:eas": "eas build --platform android --profile preview",
+    "build:clean": "npx expo prebuild --clean --platform android"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
