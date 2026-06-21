@@ -179,7 +179,7 @@ export default function SurahScreen() {
   const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
   const activeReciterLabel = RECITERS.find((r) => r.id === reciterId)?.label ?? 'Reciter';
 
-  const { data: tafsirTexts, error: tafsirError } = useQuery({
+  const { data: tafsirTexts, error: tafsirError, refetch: refetchTafsir } = useQuery({
     queryKey: ['tafsir', surahNumber, tafsirSlug],
     queryFn: () => fetchSurahTafsir(tafsirSlug, surahNumber, query.data?.verses.length ?? 0),
     enabled: showTafsir && (query.data?.verses.length ?? 0) > 0,
@@ -192,6 +192,8 @@ export default function SurahScreen() {
       console.error('Failed to fetch tafsir', tafsirError);
     }
   }, [tafsirError]);
+
+  const tafsirErrorMessage = tafsirError instanceof Error ? tafsirError.message : String(tafsirError ?? '');
 
   const { data: wordGlosses } = useQuery({
     queryKey: ['word-glosses', surahNumber],
@@ -403,6 +405,16 @@ export default function SurahScreen() {
                 </Pressable>
 
                 {surahNumber !== 9 ? <Text style={styles.bismillah}>بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</Text> : null}
+
+                {showTafsir && tafsirError ? (
+                  <View style={styles.tafsirErrorCard}>
+                    <Text style={styles.tafsirErrorTitle}>Tafsir could not load</Text>
+                    <Text style={styles.tafsirErrorBody}>{tafsirErrorMessage}</Text>
+                    <Pressable style={styles.tafsirRetryButton} onPress={() => void refetchTafsir()}>
+                      <Text style={styles.tafsirRetryText}>Retry tafsir</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
 
                 {chapterNotes.length > 0 ? (
                   <View style={styles.panel}>
@@ -669,6 +681,39 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: palette.smoke,
     lineHeight: 22,
+  },
+
+  tafsirErrorCard: {
+    marginHorizontal: 18,
+    marginBottom: 12,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FDBA74',
+    borderRadius: 14,
+    padding: 12,
+    gap: 8,
+  },
+  tafsirErrorTitle: {
+    color: '#9A3412',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  tafsirErrorBody: {
+    color: '#9A3412',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  tafsirRetryButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#9A3412',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  tafsirRetryText: {
+    color: palette.white,
+    fontWeight: '700',
+    fontSize: 12,
   },
   tafsirContainer: {
     borderTopWidth: 1,

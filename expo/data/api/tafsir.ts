@@ -1,4 +1,9 @@
-const BASE = 'https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir';
+const BASE_URLS = [
+  'https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir',
+  'https://raw.githubusercontent.com/spa5k/tafsir_api/main/tafsir',
+];
+
+const REQUEST_TIMEOUT_MS = 12000;
 
 export interface TafsirMeta {
   id: string;
@@ -19,17 +24,36 @@ interface SurahTafsirAyah {
   text: string;
 }
 
-export async function fetchAvailableTafsirs(): Promise<TafsirMeta[]> {
-    const response = await fetch(`${BASE}/editions.json`).catch((error) => {
-    console.error(`Network error fetching ${BASE}/editions.json`, error);
-    throw error;
-  });
+async function fetchJsonWithFallback<T>(path: string): Promise<T> {
+  const errors: string[] = [];
 
-  if (!response.ok) {
-    throw new Error(`tafsir_api ${response.status} while fetching tafsir list`);
+  for (const baseUrl of BASE_URLS) {
+    const url = `${baseUrl}/${path}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      return (await response.json()) as T;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${url}: ${message}`);
+      console.error(`Failed to fetch tafsir data from ${url}`, error);
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
-  const editions = (await response.json()) as TafsirEdition[];
+  throw new Error(`Unable to fetch tafsir data. Tried ${errors.join(' | ')}`);
+}
+
+export async function fetchAvailableTafsirs(): Promise<TafsirMeta[]> {
+  const editions = await fetchJsonWithFallback<TafsirEdition[]>('editions.json');
 
   return editions
     .filter((t) => t.language_name === 'english')
@@ -46,17 +70,7 @@ export async function fetchSurahTafsir(
   surahNumber: number,
   ayahCount: number,
 ): Promise<string[]> {
-  const url = `${BASE}/${tafsirSlug}/${surahNumber}.json`;
-  const response = await fetch(url).catch((error) => {
-    console.error(`Network error fetching ${url}`, error);
-    throw error;
-  });
-
-  if (!response.ok) {
-    throw new Error(`tafsir_api ${response.status} for tafsir ${tafsirSlug}/surah ${surahNumber}`);
-  }
-
-  const json = (await response.json()) as { ayahs: SurahTafsirAyah[] };
+  const json = await fetchJsonWithFallback<{ ayahs: SurahTafsirAyah[] }>(`${tafsirSlug}/${surahNumber}.json`);
 
   const byAyah = new Map<number, string>();
   for (const entry of json.ayahs) {

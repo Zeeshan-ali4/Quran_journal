@@ -36,7 +36,7 @@ export interface UserNote {
   ayahNumber?: number;
   wordIndex?: number;
   content: string;
-  tags: string[];
+  tags: NoteTag[];
   createdAt: string;
   updatedAt: string;
 }
