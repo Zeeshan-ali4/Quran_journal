@@ -41,7 +41,7 @@ const styles = StyleSheet.create({
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: palette.white,
+    backgroundColor: palette.cream,
     borderRadius: 24,
     padding: 16,
     gap: 14,

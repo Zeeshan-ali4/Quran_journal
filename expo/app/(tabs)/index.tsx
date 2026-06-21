@@ -194,7 +194,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     borderRadius: 22,
-    backgroundColor: palette.white,
+    backgroundColor: palette.cream,
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderWidth: 1,
@@ -246,7 +246,7 @@ const styles = StyleSheet.create({
   footerCard: {
     marginTop: 6,
     borderRadius: 28,
-    backgroundColor: '#EFE5D4',
+    backgroundColor: palette.cream,
     padding: 20,
     gap: 10,
   },

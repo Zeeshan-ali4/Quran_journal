@@ -12,6 +12,10 @@ export const palette = {
   border: 'rgba(32, 51, 40, 0.12)',
   overlay: 'rgba(22, 17, 11, 0.55)',
   white: '#FFFFFF',
+  cream: '#FBF6EC',
+  badgeBg: '#F3E9D4',
+  badgeBorder: 'rgba(94, 111, 82, 0.25)',
+  chipTan: '#EFE3C8',
 };
 
 const Colors = {

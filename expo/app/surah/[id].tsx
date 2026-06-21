@@ -1,19 +1,19 @@
 import { useLocalSearchParams } from 'expo-router';
-import { BookOpen, Bookmark, Headphones, Languages, MessageSquarePlus, Play, Type } from 'lucide-react-native';
+import { Bookmark, MessageSquarePlus, Play, SlidersHorizontal } from 'lucide-react-native';
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 
 import { NoteCard } from '@/components/note-card';
-import { ReciterPicker } from '@/components/reciter-picker';
 import { NoteComposer } from '@/components/note-composer';
-import { TafsirPicker } from '@/components/tafsir-picker';
-import { TranslationPicker } from '@/components/translation-picker';
+import { ReadingSettingsSheet } from '@//components/reading-settings-sheet';
 import { palette } from '@/constants/colors';
 import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
+import { RECITERS } from '@/data/api/audio';
 import { useAudioStore } from '@/stores/audio-store';
 import { fetchSurahTafsir } from '@/data/api/tafsir';
+import { fetchSurahWordGlosses } from '@//data/api/word-by-word';
 import { useNotes } from '@/providers/notes-provider';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
 import { useBookmarkStore } from '@/stores/bookmark-store';
@@ -35,6 +35,9 @@ const AyahCard = memo(function AyahCard({
   translation,
   transliteration,
   tafsir,
+  tafsirSourceLabel,
+  glosses,
+  wordByWord,
   onAyahPress,
   onWordPress,
   onBookmarkPress,
@@ -47,6 +50,9 @@ const AyahCard = memo(function AyahCard({
   translation: string;
   transliteration?: string;
   tafsir?: string;
+  tafsirSourceLabel: string;
+  glosses?: string[];
+  wordByWord: boolean;
   onAyahPress: () => void;
   onWordPress: (wordIndex: number, wordText: string) => void;
   onBookmarkPress: () => void;
@@ -55,61 +61,77 @@ const AyahCard = memo(function AyahCard({
   isActive: boolean;
 }) {
   const words = useMemo(() => arabic.split(' ').filter(Boolean), [arabic]);
-  const [tafsirExpanded, setTafsirExpanded] = useState(false);
 
   return (
     <View style={[styles.ayahCard, isActive ? styles.ayahCardActive : null, isBookmarked ? styles.ayahCardBookmarked : null]}>
-      <View style={styles.ayahHeader}>
-        <View style={styles.ayahNumberBadge}>
-          <Text style={styles.ayahNumberText}>{ayahNumber}</Text>
-        </View>
-        <View style={styles.ayahActions}>
-          <Pressable style={styles.ayahNoteButton} onPress={onAyahPress}>
-            <MessageSquarePlus color={palette.ink} size={15} />
-            <Text style={styles.ayahNoteButtonText}>Ayah note</Text>
-          </Pressable>
-          <Pressable style={styles.ayahBookmarkButton} onPress={onBookmarkPress}>
-            <Bookmark
-              color={isBookmarked ? palette.gold : palette.smoke}
-              fill={isBookmarked ? palette.gold : 'transparent'}
-              size={15}
-            />
-          </Pressable>
-        </View>
+      <View style={styles.ayahNumberBadge}>
+        <Text style={styles.ayahNumberText}>{ayahNumber}</Text>
       </View>
 
       <Text style={styles.arabicVerse}>{arabic}</Text>
+
+      <View style={styles.ayahActionsRow}>
+        <Pressable style={styles.ayahNoteButton} onPress={onAyahPress}>
+          <MessageSquarePlus color={palette.ink} size={14} />
+          <Text style={styles.ayahNoteButtonText}>Ayah note</Text>
+        </Pressable>
+        <Pressable style={styles.ayahBookmarkButton} onPress={onBookmarkPress}>
+          <Bookmark
+            color={isBookmarked ? palette.gold : palette.smoke}
+            fill={isBookmarked ? palette.gold : 'transparent'}
+            size={15}
+          />
+        </Pressable>
+      </View>
+
       {transliteration ? <Text style={styles.transliterationText}>{transliteration}</Text> : null}
       <Text style={styles.translationText}>{translation}</Text>
 
+      {wordByWord ? (
+        <View style={styles.wordChipsRow}>
+          {words.map((word, wordIndex) => {
+            const hasNote = wordHasNotes.has(wordIndex);
+            const gloss = glosses?.[wordIndex];
+            return (
+              <Pressable
+                key={`${word}-${wordIndex}`}
+                style={[styles.wordGlossChip, hasNote ? styles.wordChipActive : null]}
+                onPress={() => onWordPress(wordIndex, word)}
+              >
+                <Text style={[styles.wordChipArabic, hasNote ? styles.wordChipTextActive : null]}>{word}</Text>
+                {gloss ? <Text style={styles.wordGlossText}>{gloss}</Text> : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      ) : (
+        <View style={styles.wordChipsRow}>
+          {words.map((word, wordIndex) => {
+            const hasNote = wordHasNotes.has(wordIndex);
+            return (
+              <Pressable
+                key={`${word}-${wordIndex}`}
+                style={[styles.wordChip, hasNote ? styles.wordChipActive : null]}
+                onPress={() => onWordPress(wordIndex, word)}
+              >
+                <Text style={[styles.wordChipText, hasNote ? styles.wordChipTextActive : null]}>{word}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+
       {tafsir ? (
         <View style={styles.tafsirContainer}>
-          <Pressable style={styles.tafsirToggle} onPress={() => setTafsirExpanded((prev) => !prev)}>
-            <Text style={styles.tafsirLabel}>Tafsir {tafsirExpanded ? '▲' : '▼'}</Text>
-          </Pressable>
-          {tafsirExpanded ? (
-            <Pressable onPress={() => setTafsirExpanded(false)}>
-              <Text style={styles.tafsirBody}>{tafsir}</Text>
-            </Pressable>
-          ) : null}
+          <View style={styles.tafsirLabelRow}>
+            <View style={styles.tafsirLabelLeft}>
+              <View style={styles.tafsirDot} />
+              <Text style={styles.tafsirLabel}>TAFSIR · {tafsirSourceLabel}</Text>
+            </View>
+          </View>
+          <Text style={styles.tafsirBody}>{tafsir}</Text>
         </View>
       ) : null}
-
-      <View style={styles.wordChipsRow}>
-        {words.map((word, wordIndex) => {
-          const hasNote = wordHasNotes.has(wordIndex);
-          return (
-            <Pressable
-              key={`${word}-${wordIndex}`}
-              style={[styles.wordChip, hasNote ? styles.wordChipActive : null]}
-              onPress={() => onWordPress(wordIndex, word)}
-            >
-              <Type color={hasNote ? palette.forest : palette.smoke} size={12} />
-              <Text style={[styles.wordChipText, hasNote ? styles.wordChipTextActive : null]}>{word}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
     </View>
   );
 });
@@ -143,12 +165,11 @@ function NoteRow({ children }: { children: React.ReactNode }) {
 export default function SurahScreen() {
   const { id, ayah } = useLocalSearchParams<{ id: string; ayah?: string }>();
   const surahNumber = Number(id || 1);
-  const { translationId, showTransliteration, showTafsir, tafsirSlug } = useQuranSettingsStore();
-  const [pickerVisible, setPickerVisible] = useState(false);
-  const [tafsirPickerVisible, setTafsirPickerVisible] = useState(false);
-  const [reciterPickerVisible, setReciterPickerVisible] = useState(false);
+  const { translationId, showTransliteration, showTafsir, tafsirSlug, wordByWord } = useQuranSettingsStore();
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const listRef = useRef<FlatList<SurahListItem>>(null);
   const { currentSurah, currentAyah, isPlaying, play, resume } = useAudioStore();
+  const { reciterId } = useAudioStore();
 
   const query = useQuery({
     queryKey: ['surah', surahNumber, translationId, showTransliteration],
@@ -156,11 +177,19 @@ export default function SurahScreen() {
   });
 
   const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
+  const activeReciterLabel = RECITERS.find((r) => r.id === reciterId)?.label ?? 'Reciter';
 
   const { data: tafsirTexts } = useQuery({
     queryKey: ['tafsir', surahNumber, tafsirSlug],
     queryFn: () => fetchSurahTafsir(tafsirSlug, surahNumber, query.data?.verses.length ?? 0),
     enabled: showTafsir && (query.data?.verses.length ?? 0) > 0,
+    staleTime: Infinity,
+  });
+
+  const { data: wordGlosses } = useQuery({
+    queryKey: ['word-glosses', surahNumber],
+    queryFn: () => fetchSurahWordGlosses(surahNumber),
+    enabled: wordByWord,
     staleTime: Infinity,
   });
 
@@ -321,56 +350,63 @@ export default function SurahScreen() {
             return (
               <>
                 <View style={styles.surahHeader}>
-                  <Text style={styles.heading}>{query.data?.englishName || 'Surah'}</Text>
-                  <View style={styles.headerActions}>
-                    <Pressable
-                      style={styles.translationButton}
-                      onPress={() => {
-                        if (currentSurah === surahNumber && !isPlaying) {
-                          resume();
-                          return;
-                        }
-
-                        play(surahNumber, 1);
-                      }}
-                    >
-                      <Play color={palette.forest} size={15} />
-                      <Text style={styles.translationButtonText}>Play</Text>
-                    </Pressable>
-                    <Pressable style={styles.iconOnlyButton} onPress={() => setReciterPickerVisible(true)}>
-                      <Headphones color={palette.forest} size={15} />
-                    </Pressable>
-                    <Pressable style={styles.translationButton} onPress={() => setPickerVisible(true)}>
-                      <Languages color={palette.forest} size={15} />
-                      <Text style={styles.translationButtonText}>{activeTranslationLabel}</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.translationButton, showTafsir ? styles.translationButtonActive : null]}
-                      onPress={() => setTafsirPickerVisible(true)}
-                    >
-                      <BookOpen color={showTafsir ? palette.forest : palette.smoke} size={15} />
-                      <Text style={[styles.translationButtonText, !showTafsir ? styles.translationButtonTextMuted : null]}>
-                        Tafsir
-                      </Text>
-                    </Pressable>
-                  </View>
+                  <Text style={styles.headingArabic}>{query.data?.name}</Text>
+                  <Text style={styles.heading}>
+                    {query.data?.englishName || 'Surah'}
+                    {query.data?.englishNameTranslation ? ` · ${query.data.englishNameTranslation}` : ''}
+                  </Text>
+                  <Text style={styles.headingMeta}>
+                    {query.data ? `${query.data.numberOfAyahs} verses · ${query.data.revelationType}` : ''}
+                  </Text>
                 </View>
-                <View style={styles.panel}>
-                  <Text style={styles.title}>Chapter Notes</Text>
+
+                <View style={styles.controlBar}>
                   <Pressable
+                    style={styles.playButton}
                     onPress={() => {
-                      setSelection({ type: 'surah' });
-                      openComposer();
+                      if (currentSurah === surahNumber && !isPlaying) {
+                        resume();
+                        return;
+                      }
+
+                      play(surahNumber, 1);
                     }}
                   >
-                    <Text style={styles.buttonText}>+ Add chapter note</Text>
+                    <Play color={palette.white} size={16} fill={palette.white} />
                   </Pressable>
-                  {chapterNotes.map((note) => (
-                    <NoteRow key={note.id}>
-                      <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
-                    </NoteRow>
-                  ))}
+                  <Pressable style={styles.controlPill} onPress={() => setSettingsVisible(true)}>
+                    <Text style={styles.controlPillText}>{activeReciterLabel.split(' ')[0]}</Text>
+                  </Pressable>
+                  <Pressable style={styles.controlPill} onPress={() => setSettingsVisible(true)}>
+                    <Text style={styles.controlPillText}>{activeTranslationLabel.split(' ')[0]}</Text>
+                  </Pressable>
+                  <Pressable style={styles.settingsButton} onPress={() => setSettingsVisible(true)}>
+                    <SlidersHorizontal color={palette.forest} size={17} />
+                  </Pressable>
                 </View>
+
+                <Pressable
+                  style={styles.addChapterNoteButton}
+                  onPress={() => {
+                    setSelection({ type: 'surah' });
+                    openComposer();
+                  }}
+                >
+                  <Text style={styles.addChapterNoteText}>+ Add chapter note</Text>
+                </Pressable>
+
+                {surahNumber !== 9 ? <Text style={styles.bismillah}>بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</Text> : null}
+
+                {chapterNotes.length > 0 ? (
+                  <View style={styles.panel}>
+                    <Text style={styles.title}>Chapter Notes</Text>
+                    {chapterNotes.map((note) => (
+                      <NoteRow key={note.id}>
+                        <NoteCard note={note} onDelete={deleteNote} onEdit={handleEditNote} />
+                      </NoteRow>
+                    ))}
+                  </View>
+                ) : null}
               </>
             );
           }
@@ -399,6 +435,9 @@ export default function SurahScreen() {
               translation={item.verse.translation}
               transliteration={item.verse.transliteration}
               tafsir={item.verse.tafsir}
+              tafsirSourceLabel="IBN KATHĪR"
+              glosses={wordGlosses?.[item.verse.numberInSurah]}
+              wordByWord={wordByWord}
               onAyahPress={() => {
                 const ayahNumber = item.verse.numberInSurah;
                 updateProgress(surahNumber, ayahNumber);
@@ -432,9 +471,7 @@ export default function SurahScreen() {
         }}
       />
 
-      <TranslationPicker visible={pickerVisible} onClose={() => setPickerVisible(false)} />
-      <TafsirPicker visible={tafsirPickerVisible} onClose={() => setTafsirPickerVisible(false)} />
-      <ReciterPicker visible={reciterPickerVisible} onClose={() => setReciterPickerVisible(false)} />
+      <ReadingSettingsSheet visible={settingsVisible} onClose={() => setSettingsVisible(false)} />
 
       <NoteComposer
         visible={composerVisible}
@@ -464,50 +501,85 @@ const styles = StyleSheet.create({
     paddingBottom: 170,
   },
   surahHeader: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 4,
+    paddingVertical: 8,
   },
-  headerActions: {
+  headingArabic: {
+    fontSize: 30,
+    color: palette.ink,
+    marginBottom: 2,
+  },
+  heading: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: palette.ink,
+    textAlign: 'center',
+  },
+  headingMeta: {
+    fontSize: 13,
+    color: palette.smoke,
+  },
+  controlBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  heading: {
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  translationButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: palette.mist,
+    backgroundColor: palette.white,
+    borderRadius: 999,
+    padding: 8,
     borderWidth: 1,
     borderColor: palette.border,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
   },
-  iconOnlyButton: {
+  playButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: palette.forest,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.mist,
-    borderWidth: 1,
-    borderColor: palette.border,
-    width: 34,
-    height: 34,
-    borderRadius: 999,
   },
-  translationButtonText: {
+  controlPill: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.cream,
+    borderRadius: 999,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+  },
+  controlPillText: {
     fontSize: 13,
     fontWeight: '600',
     color: palette.forest,
   },
-  translationButtonActive: {
-    borderColor: palette.forest,
+  settingsButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: palette.cream,
   },
-  translationButtonTextMuted: {
+  addChapterNoteButton: {
+    borderWidth: 1.5,
+    borderColor: palette.border,
+    borderStyle: 'dashed',
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  addChapterNoteText: {
     color: palette.smoke,
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  bismillah: {
+    textAlign: 'center',
+    fontSize: 26,
+    color: palette.olive,
+    fontStyle: 'italic',
+    paddingVertical: 8,
   },
   transliterationText: {
     fontSize: 13,
@@ -518,6 +590,7 @@ const styles = StyleSheet.create({
   ayahCard: {
     backgroundColor: palette.white,
     padding: 16,
+    paddingTop: 22,
     borderRadius: 16,
     gap: 12,
   },
@@ -531,25 +604,26 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: palette.gold,
   },
-  ayahHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
   ayahNumberBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: palette.forest,
+    position: 'absolute',
+    top: -12,
+    right: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: palette.badgeBg,
+    borderWidth: 1,
+    borderColor: palette.badgeBorder,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 1,
   },
   ayahNumberText: {
-    color: palette.white,
+    color: palette.ink,
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 12,
   },
-  ayahActions: {
+  ayahActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -595,8 +669,21 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     gap: 8,
   },
-  tafsirToggle: {
-    alignSelf: 'flex-start',
+  tafsirLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  tafsirLabelLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  tafsirDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: palette.olive,
   },
   tafsirLabel: {
     fontSize: 11,
@@ -629,12 +716,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'transparent',
   },
+  wordGlossChip: {
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: palette.chipTan,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    minWidth: 44,
+  },
   wordChipActive: {
-    backgroundColor: palette.sand,
     borderColor: palette.forest,
   },
   wordChipText: {
     fontSize: 15,
+    color: palette.smoke,
+    fontWeight: '500',
+  },
+  wordChipArabic: {
+    fontSize: 16,
+    color: palette.ink,
+    fontWeight: '500',
+  },
+  wordGlossText: {
+    fontSize: 10,
     color: palette.smoke,
     fontWeight: '500',
   },
