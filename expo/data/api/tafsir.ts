@@ -1,4 +1,4 @@
-const BASE = 'https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir';
+const BASE = 'https://raw.githubusercontent.com/spa5k/tafsir_api/main/tafsir';
 
 export interface TafsirMeta {
   id: string;

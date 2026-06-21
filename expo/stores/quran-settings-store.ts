@@ -29,7 +29,7 @@ export const useQuranSettingsStore = create<QuranSettingsStore>()(
       translationId: 'bundled',
       showTransliteration: false,
       showTafsir: false,
-      tafsirSlug: 'en-tafsir-ibn-kathir',
+      tafsirSlug: 'en-tafisr-ibn-kathir',
       setTranslation: (id) => set({ translationId: id }),
       setShowTransliteration: (value) => set({ showTransliteration: value }),
       setShowTafsir: (show) => set({ showTafsir: show }),
