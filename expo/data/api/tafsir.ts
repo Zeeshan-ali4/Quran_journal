@@ -20,9 +20,11 @@ interface TafsirEdition {
 }
 
 interface SurahTafsirAyah {
-  ayah: number;
+  ayah?: number;
   text: string;
 }
+
+type SurahTafsirResponse = { ayahs: SurahTafsirAyah[] } | SurahTafsirAyah[];
 
 async function fetchJsonWithFallback<T>(path: string): Promise<T> {
   const errors: string[] = [];
@@ -70,12 +72,16 @@ export async function fetchSurahTafsir(
   surahNumber: number,
   ayahCount: number,
 ): Promise<string[]> {
-  const json = await fetchJsonWithFallback<{ ayahs: SurahTafsirAyah[] }>(`${tafsirSlug}/${surahNumber}.json`);
+  const json = await fetchJsonWithFallback<SurahTafsirResponse>(`${tafsirSlug}/${surahNumber}.json`);
+  const ayahs = Array.isArray(json) ? json : json.ayahs;
 
-  const byAyah = new Map<number, string>();
-  for (const entry of json.ayahs) {
-    byAyah.set(entry.ayah, entry.text);
+  if (!Array.isArray(ayahs)) {
+    throw new Error(`Unexpected tafsir response shape for ${tafsirSlug}/${surahNumber}.json`);
   }
+  const byAyah = new Map<number, string>();
+  ayahs.forEach((entry, index) => {
+    byAyah.set(entry.ayah ?? index + 1, entry.text);
+  });
 
   return Array.from({ length: ayahCount }, (_, i) => byAyah.get(i + 1) ?? '');
 }

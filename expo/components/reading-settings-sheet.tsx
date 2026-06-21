@@ -44,10 +44,12 @@ export function ReadingSettingsSheet({ visible, onClose }: ReadingSettingsSheetP
     translationId,
     showTransliteration,
     tafsirSlug,
+    showTafsir,
     wordByWord,
     setTranslation,
     setShowTransliteration,
     setTafsirSlug,
+    setShowTafsir,
     setWordByWord,
   } = useQuranSettingsStore();
   const { reciterId, setReciter, stop } = useAudioStore();
@@ -195,6 +197,15 @@ export function ReadingSettingsSheet({ visible, onClose }: ReadingSettingsSheetP
           <Text style={styles.sectionLabel}>DISPLAY</Text>
           <View style={styles.toggleRow}>
             <Text style={styles.toggleLabel}>Transliteration</Text>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>Show Tafsir</Text>
+              <Switch
+                value={showTafsir}
+                onValueChange={setShowTafsir}
+                trackColor={{ true: palette.forest }}
+                thumbColor={palette.white}
+              />
+            </View>
             <Switch
               value={showTransliteration}
               onValueChange={setShowTransliteration}
