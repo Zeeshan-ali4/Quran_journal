@@ -1,7 +1,7 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useIsFetching, useQuery } from '@tanstack/react-query';
 import {
   ActivityIndicator,
   Pressable,
@@ -19,6 +19,21 @@ import { palette } from '@/constants/colors';
 import { fetchSurahList } from '@/data/api/quran';
 import { useBookmarkStore } from '@/stores/bookmark-store';
 import type { SurahSummary } from '@/types/quran';
+
+interface SurahRowProps {
+  surah: SurahSummary;
+  hasBookmark: boolean;
+  onPress: () => void;
+}
+
+function SurahRow({ surah, hasBookmark, onPress }: SurahRowProps) {
+  const isDownloading =
+    useIsFetching({
+      predicate: (query) => query.queryKey[0] !== 'surahs' && query.queryKey[1] === surah.number,
+    }) > 0;
+
+  return <SurahListItem surah={surah} hasBookmark={hasBookmark} isDownloading={isDownloading} onPress={onPress} />;
+}
 
 export default function ReadScreen() {
   const router = useRouter();
@@ -107,7 +122,7 @@ export default function ReadScreen() {
 
         {!surahsQuery.isPending && !surahsQuery.isError
           ? filteredSurahs.map((surah) => (
-              <SurahListItem
+              <SurahRow
                 key={surah.number}
                 surah={surah}
                 hasBookmark={bookmarks.some((bookmark) => bookmark.surahNumber === surah.number)}

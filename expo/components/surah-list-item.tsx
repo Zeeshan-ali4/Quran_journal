@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Bookmark, ChevronRight } from 'lucide-react-native';
 
 import { palette } from '@/constants/colors';
@@ -9,13 +9,18 @@ interface SurahListItemProps {
   surah: SurahSummary;
   onPress: () => void;
   hasBookmark?: boolean;
+  isDownloading?: boolean;
 }
 
-export function SurahListItem({ surah, onPress, hasBookmark = false }: SurahListItemProps) {
+export function SurahListItem({ surah, onPress, hasBookmark = false, isDownloading = false }: SurahListItemProps) {
   return (
     <Pressable onPress={onPress} style={styles.card} testID={`surah-card-${surah.number}`}>
-      <View style={styles.numberBadge}>
-        <Text style={styles.numberText}>{surah.number}</Text>
+      <View style={styles.numberBadge} testID={isDownloading ? `surah-downloading-${surah.number}` : undefined}>
+        {isDownloading ? (
+          <ActivityIndicator color={palette.white} size="small" />
+        ) : (
+          <Text style={styles.numberText}>{surah.number}</Text>
+        )}
       </View>
       <View style={styles.content}>
         <Text style={styles.name}>{surah.englishName}</Text>
