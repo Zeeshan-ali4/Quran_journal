@@ -70,10 +70,10 @@ export async function fetchSurahTafsir(
   surahNumber: number,
   ayahCount: number,
 ): Promise<string[]> {
-  const json = await fetchJsonWithFallback<{ ayahs: SurahTafsirAyah[] }>(`${tafsirSlug}/${surahNumber}.json`);
+  const entries = await fetchJsonWithFallback<SurahTafsirAyah[]>(`${tafsirSlug}/${surahNumber}.json`);
 
   const byAyah = new Map<number, string>();
-  for (const entry of json.ayahs) {
+  for (const entry of entries) {
     byAyah.set(entry.ayah, entry.text);
   }
 
