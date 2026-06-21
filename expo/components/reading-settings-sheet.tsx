@@ -44,9 +44,11 @@ export function ReadingSettingsSheet({ visible, onClose }: ReadingSettingsSheetP
     translationId,
     showTransliteration,
     tafsirSlug,
+    showTafsir,
     wordByWord,
     setTranslation,
     setShowTransliteration,
+    setShowTafsir,
     setTafsirSlug,
     setWordByWord,
   } = useQuranSettingsStore();
@@ -193,6 +195,15 @@ export function ReadingSettingsSheet({ visible, onClose }: ReadingSettingsSheetP
           ) : null}
 
           <Text style={styles.sectionLabel}>DISPLAY</Text>
+          <View style={styles.toggleRow}>
+            <Text style={styles.toggleLabel}>Show Tafsir</Text>
+            <Switch
+              value={showTafsir}
+              onValueChange={setShowTafsir}
+              trackColor={{ true: palette.forest }}
+              thumbColor={palette.white}
+            />
+          </View>
           <View style={styles.toggleRow}>
             <Text style={styles.toggleLabel}>Transliteration</Text>
             <Switch
