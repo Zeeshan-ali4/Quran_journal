@@ -56,10 +56,10 @@ export async function fetchSurahTafsir(
     throw new Error(`tafsir_api ${response.status} for tafsir ${tafsirSlug}/surah ${surahNumber}`);
   }
 
-  const json = (await response.json()) as { ayahs: SurahTafsirAyah[] };
+  const entries = (await response.json()) as SurahTafsirAyah[];
 
   const byAyah = new Map<number, string>();
-  for (const entry of json.ayahs) {
+  for (const entry of entries) {
     byAyah.set(entry.ayah, entry.text);
   }
 
