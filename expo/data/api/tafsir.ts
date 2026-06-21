@@ -70,10 +70,18 @@ export async function fetchSurahTafsir(
   surahNumber: number,
   ayahCount: number,
 ): Promise<string[]> {
-  const json = await fetchJsonWithFallback<{ ayahs: SurahTafsirAyah[] }>(`${tafsirSlug}/${surahNumber}.json`);
+  const json = await fetchJsonWithFallback<{ ayahs: SurahTafsirAyah[] } | SurahTafsirAyah[]>(
+    `${tafsirSlug}/${surahNumber}.json`,
+  );
+
+  const ayahs = Array.isArray(json) ? json : json?.ayahs;
+
+  if (!Array.isArray(ayahs)) {
+    throw new Error(`Unexpected tafsir response shape for ${tafsirSlug}/${surahNumber}.json`);
+  }
 
   const byAyah = new Map<number, string>();
-  for (const entry of json.ayahs) {
+  for (const entry of ayahs) {
     byAyah.set(entry.ayah, entry.text);
   }
 
