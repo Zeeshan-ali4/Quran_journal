@@ -179,12 +179,19 @@ export default function SurahScreen() {
   const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
   const activeReciterLabel = RECITERS.find((r) => r.id === reciterId)?.label ?? 'Reciter';
 
-  const { data: tafsirTexts } = useQuery({
+  const { data: tafsirTexts, error: tafsirError } = useQuery({
     queryKey: ['tafsir', surahNumber, tafsirSlug],
     queryFn: () => fetchSurahTafsir(tafsirSlug, surahNumber, query.data?.verses.length ?? 0),
     enabled: showTafsir && (query.data?.verses.length ?? 0) > 0,
     staleTime: Infinity,
+    retry: 2,
   });
+
+  useEffect(() => {
+    if (tafsirError) {
+      console.error('Failed to fetch tafsir', tafsirError);
+    }
+  }, [tafsirError]);
 
   const { data: wordGlosses } = useQuery({
     queryKey: ['word-glosses', surahNumber],
