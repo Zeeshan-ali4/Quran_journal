@@ -30,6 +30,12 @@ type SurahListItem =
   | { type: 'verse'; verse: Verse }
   | { type: 'ayahNotes' };
 
+const QURANIC_PAUSE_MARK_TOKEN_REGEX = /^[\u06D6-\u06ED]+$/;
+
+function getArabicWordTokens(arabic: string) {
+  return arabic.split(/\s+/).filter((token) => token && !QURANIC_PAUSE_MARK_TOKEN_REGEX.test(token));
+}
+
 const AyahCard = memo(function AyahCard({
   ayahNumber,
   arabic,
@@ -61,7 +67,7 @@ const AyahCard = memo(function AyahCard({
   wordHasNotes: Set<number>;
   isActive: boolean;
 }) {
-  const words = useMemo(() => arabic.split(' ').filter(Boolean), [arabic]);
+  const words = useMemo(() => getArabicWordTokens(arabic), [arabic]);
 
   return (
     <View style={[styles.ayahCard, isActive ? styles.ayahCardActive : null, isBookmarked ? styles.ayahCardBookmarked : null]}>
