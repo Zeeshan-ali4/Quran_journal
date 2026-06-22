@@ -16,6 +16,8 @@ type PlaybackQueueOptions = {
   onFatalError: (error: unknown) => void;
 };
 
+type CurrentTrackInfo = QueueTrack | null;
+
 const CREATE_BACKOFF_MS = [250, 750] as const;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,6 +38,7 @@ class AudioPlaybackQueue {
   private preloaded: LoadedSound | null = null;
   private loadingToken = 0;
   private options: PlaybackQueueOptions | null = null;
+  private currentTrackInfo: CurrentTrackInfo = null;
 
   setOptions(options: PlaybackQueueOptions) {
     this.options = options;
@@ -43,6 +46,7 @@ class AudioPlaybackQueue {
 
   async clear() {
     this.loadingToken += 1;
+    this.currentTrackInfo = null;
     audioDownloadQueue.clear();
     await Promise.all([this.unloadCurrent(), this.unloadPreloaded()]);
   }
@@ -52,6 +56,7 @@ class AudioPlaybackQueue {
     this.loadingToken = token;
 
     audioDownloadQueue.prioritize(track);
+    this.currentTrackInfo = track;
 
     if (sameTrack(this.current?.key, track)) {
       if (shouldPlay) {
@@ -67,7 +72,7 @@ class AudioPlaybackQueue {
       if (!promoted) return;
       this.current = promoted;
       this.preloaded = null;
-      this.attachFinishHandler(promoted.sound);
+      this.attachFinishHandler(promoted.sound, track);
       if (shouldPlay) {
         await promoted.sound.playAsync();
       }
@@ -83,7 +88,7 @@ class AudioPlaybackQueue {
     }
     await this.unloadPreloaded();
     this.current = loaded;
-    this.attachFinishHandler(loaded.sound);
+    this.attachFinishHandler(loaded.sound, track);
     this.preloadNext(track, token);
   }
 
@@ -141,12 +146,34 @@ class AudioPlaybackQueue {
     throw lastError instanceof Error ? lastError : new Error('Audio playback creation failed');
   }
 
-  private attachFinishHandler(sound: Audio.Sound) {
+  private attachFinishHandler(sound: Audio.Sound, track: QueueTrack) {
     sound.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
       if (status.isLoaded && status.didJustFinish) {
+        this.promotePreloadedAndPlay(track);
         this.options?.onFinish();
       }
     });
+  }
+
+  private promotePreloadedAndPlay(finishedTrack: QueueTrack) {
+    const upcoming = nextTrack(finishedTrack);
+    if (!upcoming || !this.preloaded || !sameTrack(this.preloaded.key, upcoming)) {
+      return;
+    }
+
+    const old = this.current;
+    const promoted = this.preloaded;
+    this.current = promoted;
+    this.preloaded = null;
+    this.currentTrackInfo = upcoming;
+
+    this.attachFinishHandler(promoted.sound, upcoming);
+    void promoted.sound.playAsync();
+    this.preloadNext(upcoming, this.loadingToken);
+
+    if (old) {
+      void old.sound.unloadAsync();
+    }
   }
 
   private async unloadCurrent() {
