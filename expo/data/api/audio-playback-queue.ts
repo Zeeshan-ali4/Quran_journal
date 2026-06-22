@@ -19,6 +19,8 @@ type PlaybackQueueOptions = {
 type CurrentTrackInfo = QueueTrack | null;
 
 const CREATE_BACKOFF_MS = [250, 750] as const;
+const EARLY_ADVANCE_MS = 350;
+const OVERLAP_MS = 150;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,6 +41,8 @@ class AudioPlaybackQueue {
   private loadingToken = 0;
   private options: PlaybackQueueOptions | null = null;
   private currentTrackInfo: CurrentTrackInfo = null;
+  private trackGeneration = 0;
+  private advancedForGeneration = -1;
 
   setOptions(options: PlaybackQueueOptions) {
     this.options = options;
@@ -46,6 +50,8 @@ class AudioPlaybackQueue {
 
   async clear() {
     this.loadingToken += 1;
+    this.trackGeneration += 1;
+    this.advancedForGeneration = -1;
     this.currentTrackInfo = null;
     audioDownloadQueue.clear();
     await Promise.all([this.unloadCurrent(), this.unloadPreloaded()]);
@@ -54,6 +60,8 @@ class AudioPlaybackQueue {
   async load(track: QueueTrack, shouldPlay: boolean) {
     const token = this.loadingToken + 1;
     this.loadingToken = token;
+    this.trackGeneration += 1;
+    this.advancedForGeneration = -1;
 
     audioDownloadQueue.prioritize(track);
     this.currentTrackInfo = track;
@@ -147,15 +155,33 @@ class AudioPlaybackQueue {
   }
 
   private attachFinishHandler(sound: Audio.Sound, track: QueueTrack) {
+    const generation = this.trackGeneration;
+
     sound.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
-      if (status.isLoaded && status.didJustFinish) {
-        this.promotePreloadedAndPlay(track);
+      if (!status.isLoaded || generation !== this.trackGeneration) return;
+
+      const upcoming = nextTrack(track);
+
+      if (
+        upcoming &&
+        status.durationMillis &&
+        status.positionMillis >= status.durationMillis - EARLY_ADVANCE_MS &&
+        this.advancedForGeneration !== generation
+      ) {
+        this.advancedForGeneration = generation;
+        this.promotePreloadedAndPlay(track, true);
+        this.options?.onFinish();
+        return;
+      }
+
+      if (status.didJustFinish && this.advancedForGeneration !== generation) {
+        this.promotePreloadedAndPlay(track, false);
         this.options?.onFinish();
       }
     });
   }
 
-  private promotePreloadedAndPlay(finishedTrack: QueueTrack) {
+  private promotePreloadedAndPlay(finishedTrack: QueueTrack, keepOverlap: boolean) {
     const upcoming = nextTrack(finishedTrack);
     if (!upcoming || !this.preloaded || !sameTrack(this.preloaded.key, upcoming)) {
       return;
@@ -166,13 +192,18 @@ class AudioPlaybackQueue {
     this.current = promoted;
     this.preloaded = null;
     this.currentTrackInfo = upcoming;
+    this.trackGeneration += 1;
 
     this.attachFinishHandler(promoted.sound, upcoming);
     void promoted.sound.playAsync();
     this.preloadNext(upcoming, this.loadingToken);
 
     if (old) {
-      void old.sound.unloadAsync();
+      if (keepOverlap) {
+        setTimeout(() => void old.sound.unloadAsync(), OVERLAP_MS);
+      } else {
+        void old.sound.unloadAsync();
+      }
     }
   }
 
