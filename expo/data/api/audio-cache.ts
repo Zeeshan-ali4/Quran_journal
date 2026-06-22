@@ -1,4 +1,5 @@
 import { Directory, File, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
 
 import { getAudioUrl } from '@/data/api/audio';
 
@@ -38,15 +39,18 @@ function ensureSurahDirectory(key: AudioCacheKey) {
 }
 
 export function hasRoomForAggressiveAudioPrefetch() {
+  if (Platform.OS === 'web') return false;
   return Paths.availableDiskSpace >= MIN_AGGRESSIVE_PREFETCH_FREE_BYTES;
 }
 
 export function isCachedAyahValid(key: AudioCacheKey) {
+  if (Platform.OS === 'web') return false;
   const file = getAyahAudioFile(key);
   return file.exists && file.size >= MIN_VALID_AUDIO_BYTES;
 }
 
 export function deleteCachedAyah(key: AudioCacheKey) {
+  if (Platform.OS === 'web') return;
   const file = getAyahAudioFile(key);
   if (file.exists) {
     file.delete();
@@ -67,6 +71,7 @@ async function downloadOnce(key: AudioCacheKey) {
 }
 
 export async function getCachedAudioUri(key: AudioCacheKey) {
+  if (Platform.OS === 'web') return null;
   if (isCachedAyahValid(key)) {
     return getAyahAudioFile(key).uri;
   }
@@ -76,6 +81,10 @@ export async function getCachedAudioUri(key: AudioCacheKey) {
 }
 
 export async function downloadAyahAudio(key: AudioCacheKey) {
+  if (Platform.OS === 'web') {
+    return getAudioUrl(key.surah, key.ayah, key.reciterId);
+  }
+
   for (let attempt = 0; attempt < DOWNLOAD_BACKOFF_MS.length; attempt += 1) {
     try {
       return await downloadOnce(key);
@@ -91,6 +100,9 @@ export async function downloadAyahAudio(key: AudioCacheKey) {
 }
 
 export async function getOrDownloadAyahAudio(key: AudioCacheKey) {
+  if (Platform.OS === 'web') {
+    return getAudioUrl(key.surah, key.ayah, key.reciterId);
+  }
   const cached = await getCachedAudioUri(key);
   return cached ?? downloadAyahAudio(key);
 }
@@ -130,6 +142,8 @@ function oldestModifiedTime(directory: Directory) {
 }
 
 export async function cleanupAudioCache() {
+  if (Platform.OS === 'web') return;
+
   const root = cacheRootDirectory();
   root.create({ intermediates: true, idempotent: true });
 
