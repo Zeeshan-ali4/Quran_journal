@@ -13,7 +13,7 @@ import { fetchSurahDetail } from '@/data/api/quran';
 import { RECITERS } from '@/data/api/audio';
 import { audioDownloadQueue } from '@/data/api/audio-download-queue';
 import { useAudioStore } from '@/stores/audio-store';
-import { fetchSurahTafsir, TafsirError } from '@/data/api/tafsir';
+import { fetchAvailableTafsirs, fetchSurahTafsir, TafsirError } from '@/data/api/tafsir';
 import { fetchSurahWordGlosses } from '@//data/api/word-by-word';
 import { useNotesStore } from '@/stores/notes-store';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
@@ -186,6 +186,17 @@ export default function SurahScreen() {
   const activeTranslationLabel = TRANSLATIONS.find((t) => t.id === translationId)?.label ?? 'Translation';
   const activeReciterLabel = RECITERS.find((r) => r.id === reciterId)?.label ?? 'Reciter';
 
+  const { data: availableTafsirs } = useQuery({
+    queryKey: ['tafsirs'],
+    queryFn: fetchAvailableTafsirs,
+    staleTime: Infinity,
+  });
+
+  const tafsirSourceLabel = useMemo(
+    () => availableTafsirs?.find((tafsir) => tafsir.id === tafsirSlug)?.name ?? 'Tafsir',
+    [availableTafsirs, tafsirSlug],
+  );
+
   const { data: tafsirTexts, error: tafsirError, refetch: refetchTafsir } = useQuery({
     queryKey: ['tafsir', surahNumber, tafsirSlug],
     queryFn: () => fetchSurahTafsir(tafsirSlug, surahNumber, query.data?.verses.length ?? 0),
@@ -286,17 +297,17 @@ export default function SurahScreen() {
       return;
     }
 
-    try {
-      listRef.current?.scrollToIndex({ index: currentAyah, animated: true, viewPosition: 0.2 });
-    } catch {}
+    listRef.current?.scrollToIndex({ index: currentAyah, animated: true, viewPosition: 0.2 });
   }, [currentAyah, currentSurah, surahNumber]);
 
   useEffect(() => {
     const target = Number(ayah);
     if (!Number.isFinite(target) || target <= 0 || !query.data) return;
-    try {
+    const timeout = setTimeout(() => {
       listRef.current?.scrollToIndex({ index: target, animated: true, viewPosition: 0.2 });
-    } catch {}
+    }, 100);
+
+    return () => clearTimeout(timeout);
   }, [ayah, query.data]);
 
   const openComposer = () => {
@@ -362,11 +373,19 @@ export default function SurahScreen() {
         maxToRenderPerBatch={6}
         updateCellsBatchingPeriod={30}
         removeClippedSubviews
-        onScrollToIndexFailed={({ index }) => {
+        onScrollToIndexFailed={({ index, averageItemLength }) => {
           listRef.current?.scrollToOffset({
-            offset: index * 200,
-            animated: true,
+            offset: index * averageItemLength,
+            animated: false,
           });
+
+          setTimeout(() => {
+            try {
+              listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.2 });
+            } catch {
+              // Stay near the estimated offset if the target row is still not measured.
+            }
+          }, 300);
         }}
         renderItem={({ item }) => {
           if (item.type === 'chapterNotes') {
@@ -471,7 +490,7 @@ export default function SurahScreen() {
               translation={item.verse.translation}
               transliteration={item.verse.transliteration}
               tafsir={item.verse.tafsir}
-              tafsirSourceLabel="IBN KATHĪR"
+              tafsirSourceLabel={tafsirSourceLabel}
               glosses={wordGlosses?.[item.verse.numberInSurah]}
               wordByWord={wordByWord}
               onAyahPress={() => {
