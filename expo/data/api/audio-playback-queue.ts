@@ -9,6 +9,8 @@ type QueueTrack = TrackKey & { totalAyahs: number };
 type LoadedSound = {
   key: TrackKey;
   sound: Audio.Sound;
+  requestedAdvance: boolean;
+  canAdvanceBeforeEnd: boolean;
 };
 
 type PlaybackQueueOptions = {
@@ -16,9 +18,10 @@ type PlaybackQueueOptions = {
   onFatalError: (error: unknown) => void;
 };
 
-type CurrentTrackInfo = QueueTrack | null;
-
 const CREATE_BACKOFF_MS = [250, 750] as const;
+const NEAR_END_ADVANCE_MS = 350;
+const PLAYBACK_STATUS_INTERVAL_MS = 100;
+const OVERLAP_UNLOAD_DELAY_MS = 150;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -38,7 +41,6 @@ class AudioPlaybackQueue {
   private preloaded: LoadedSound | null = null;
   private loadingToken = 0;
   private options: PlaybackQueueOptions | null = null;
-  private currentTrackInfo: CurrentTrackInfo = null;
 
   setOptions(options: PlaybackQueueOptions) {
     this.options = options;
@@ -46,7 +48,6 @@ class AudioPlaybackQueue {
 
   async clear() {
     this.loadingToken += 1;
-    this.currentTrackInfo = null;
     audioDownloadQueue.clear();
     await Promise.all([this.unloadCurrent(), this.unloadPreloaded()]);
   }
@@ -56,7 +57,6 @@ class AudioPlaybackQueue {
     this.loadingToken = token;
 
     audioDownloadQueue.prioritize(track);
-    this.currentTrackInfo = track;
 
     if (sameTrack(this.current?.key, track)) {
       if (shouldPlay) {
@@ -67,15 +67,16 @@ class AudioPlaybackQueue {
     }
 
     if (sameTrack(this.preloaded?.key, track)) {
-      await this.unloadCurrent();
+      const previous = this.current;
       const promoted = this.preloaded;
       if (!promoted) return;
       this.current = promoted;
       this.preloaded = null;
-      this.attachFinishHandler(promoted.sound, track);
+      this.attachFinishHandler(promoted);
       if (shouldPlay) {
         await promoted.sound.playAsync();
       }
+      this.unloadAfterOverlap(previous);
       this.preloadNext(track, token);
       return;
     }
@@ -88,7 +89,7 @@ class AudioPlaybackQueue {
     }
     await this.unloadPreloaded();
     this.current = loaded;
-    this.attachFinishHandler(loaded.sound, track);
+    this.attachFinishHandler(loaded);
     this.preloadNext(track, token);
   }
 
@@ -125,14 +126,17 @@ class AudioPlaybackQueue {
     })();
   }
 
-  private async createLoadedSound(track: TrackKey, shouldPlay: boolean, token: number): Promise<LoadedSound> {
+  private async createLoadedSound(track: QueueTrack, shouldPlay: boolean, token: number): Promise<LoadedSound> {
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= CREATE_BACKOFF_MS.length; attempt += 1) {
       try {
         const uri = await getOrDownloadAyahAudio(track);
-        const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay });
-        return { key: track, sound };
+        const { sound } = await Audio.Sound.createAsync(
+          { uri },
+          { progressUpdateIntervalMillis: PLAYBACK_STATUS_INTERVAL_MS, shouldPlay }
+        );
+        return { key: track, canAdvanceBeforeEnd: track.ayah < track.totalAyahs, requestedAdvance: false, sound };
       } catch (error) {
         lastError = error;
         deleteCachedAyah(track);
@@ -146,40 +150,47 @@ class AudioPlaybackQueue {
     throw lastError instanceof Error ? lastError : new Error('Audio playback creation failed');
   }
 
-  private attachFinishHandler(sound: Audio.Sound, track: QueueTrack) {
-    sound.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
-      if (status.isLoaded && status.didJustFinish) {
-        this.promotePreloadedAndPlay(track);
+  private attachFinishHandler(loaded: LoadedSound) {
+    loaded.sound.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
+      if (!status.isLoaded || this.current !== loaded) {
+        return;
+      }
+
+      const remainingMillis = typeof status.durationMillis === 'number'
+        ? status.durationMillis - status.positionMillis
+        : null;
+
+      if (
+        loaded.canAdvanceBeforeEnd
+        && !loaded.requestedAdvance
+        && remainingMillis !== null
+        && remainingMillis <= NEAR_END_ADVANCE_MS
+      ) {
+        loaded.requestedAdvance = true;
+        this.options?.onFinish();
+        return;
+      }
+
+      if (status.didJustFinish && !loaded.requestedAdvance) {
+        loaded.requestedAdvance = true;
         this.options?.onFinish();
       }
     });
   }
 
-  private promotePreloadedAndPlay(finishedTrack: QueueTrack) {
-    const upcoming = nextTrack(finishedTrack);
-    if (!upcoming || !this.preloaded || !sameTrack(this.preloaded.key, upcoming)) {
-      return;
-    }
-
-    const old = this.current;
-    const promoted = this.preloaded;
-    this.current = promoted;
-    this.preloaded = null;
-    this.currentTrackInfo = upcoming;
-
-    this.attachFinishHandler(promoted.sound, upcoming);
-    void promoted.sound.playAsync();
-    this.preloadNext(upcoming, this.loadingToken);
-
-    if (old) {
-      void old.sound.unloadAsync();
-    }
+  private unloadAfterOverlap(loaded: LoadedSound | null) {
+    if (!loaded) return;
+    loaded.sound.setOnPlaybackStatusUpdate(null);
+    setTimeout(() => {
+      void loaded.sound.unloadAsync();
+    }, OVERLAP_UNLOAD_DELAY_MS);
   }
 
   private async unloadCurrent() {
     if (!this.current) return;
     const sound = this.current.sound;
     this.current = null;
+    sound.setOnPlaybackStatusUpdate(null);
     await sound.unloadAsync();
   }
 
@@ -187,6 +198,7 @@ class AudioPlaybackQueue {
     if (!this.preloaded) return;
     const sound = this.preloaded.sound;
     this.preloaded = null;
+    sound.setOnPlaybackStatusUpdate(null);
     await sound.unloadAsync();
   }
 }
