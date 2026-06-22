@@ -12,7 +12,7 @@ import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
 import { RECITERS } from '@/data/api/audio';
 import { useAudioStore } from '@/stores/audio-store';
-import { fetchSurahTafsir } from '@/data/api/tafsir';
+import { fetchSurahTafsir, TafsirError } from '@/data/api/tafsir';
 import { fetchSurahWordGlosses } from '@//data/api/word-by-word';
 import { useNotes } from '@/providers/notes-provider';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
@@ -193,7 +193,19 @@ export default function SurahScreen() {
     }
   }, [tafsirError]);
 
-  const tafsirErrorMessage = tafsirError instanceof Error ? tafsirError.message : String(tafsirError ?? '');
+  const tafsirStatusMessage = tafsirTexts?.status === 'empty'
+    ? tafsirTexts.reason === 'source_missing'
+      ? 'This tafsir source could not be loaded. Try another tafsir.'
+      : 'This tafsir source does not include this surah.'
+    : tafsirError instanceof TafsirError
+      ? tafsirError.kind === 'offline'
+        ? 'This tafsir source does not include this surah.'
+        : 'This tafsir source does not include this surah.'
+      : tafsirError
+        ? 'This tafsir source does not include this surah.'
+        : '';
+  const shouldShowTafsirRetry = tafsirError instanceof TafsirError;
+  const shouldShowTafsirStatus = showTafsir && (tafsirTexts?.status === 'empty' || Boolean(tafsirError));
 
   const { data: wordGlosses } = useQuery({
     queryKey: ['word-glosses', surahNumber],
@@ -256,7 +268,7 @@ export default function SurahScreen() {
     const verses = query.data?.verses ?? [];
     const versesWithTafsir = verses.map((verse, index) => ({
       ...verse,
-      tafsir: showTafsir ? tafsirTexts?.[index] : undefined,
+      tafsir: showTafsir && tafsirTexts?.status === 'ready' ? tafsirTexts.data[index] : undefined,
     }));
 
     const items: SurahListItem[] = [{ type: 'chapterNotes' }];
@@ -406,13 +418,15 @@ export default function SurahScreen() {
 
                 {surahNumber !== 9 ? <Text style={styles.bismillah}>بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ</Text> : null}
 
-                {showTafsir && tafsirError ? (
+                {shouldShowTafsirStatus ? (
                   <View style={styles.tafsirErrorCard}>
                     <Text style={styles.tafsirErrorTitle}>Tafsir could not load</Text>
-                    <Text style={styles.tafsirErrorBody}>{tafsirErrorMessage}</Text>
-                    <Pressable style={styles.tafsirRetryButton} onPress={() => void refetchTafsir()}>
-                      <Text style={styles.tafsirRetryText}>Retry tafsir</Text>
-                    </Pressable>
+                    <Text style={styles.tafsirErrorBody}>{tafsirStatusMessage}</Text>
+                    {shouldShowTafsirRetry ? (
+                      <Pressable style={styles.tafsirRetryButton} onPress={() => void refetchTafsir()}>
+                        <Text style={styles.tafsirRetryText}>Retry tafsir</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
                 ) : null}
 

@@ -198,13 +198,13 @@ export function ReadingSettingsSheet({ visible, onClose }: ReadingSettingsSheetP
           <View style={styles.toggleRow}>
             <Text style={styles.toggleLabel}>Transliteration</Text>
             <View style={styles.toggleRow}>
-              <Text style={styles.toggleLabel}>Show Tafsir</Text>
+              {/* <Text style={styles.toggleLabel}>Show Tafsir</Text>
               <Switch
                 value={showTafsir}
                 onValueChange={setShowTafsir}
                 trackColor={{ true: palette.forest }}
                 thumbColor={palette.white}
-              />
+              /> */}
             </View>
             <Switch
               value={showTransliteration}
@@ -212,6 +212,15 @@ export function ReadingSettingsSheet({ visible, onClose }: ReadingSettingsSheetP
               trackColor={{ true: palette.forest }}
               thumbColor={palette.white}
             />
+          </View>
+            <View style={styles.toggleRow}>
+              <Text style={styles.toggleLabel}>Show Tafsir</Text>
+              <Switch
+                  value={showTafsir}
+                  onValueChange={setShowTafsir}
+                  trackColor={{ true: palette.forest }}
+                  thumbColor={palette.white}
+              />
           </View>
           <View style={styles.toggleRow}>
             <Text style={styles.toggleLabel}>Word-by-word</Text>
