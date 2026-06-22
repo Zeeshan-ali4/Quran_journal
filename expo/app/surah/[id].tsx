@@ -11,6 +11,7 @@ import { palette } from '@/constants/colors';
 import { REFLECTION_PROMPTS } from '@/constants/reflection-prompts';
 import { fetchSurahDetail } from '@/data/api/quran';
 import { RECITERS } from '@/data/api/audio';
+import { audioDownloadQueue } from '@/data/api/audio-download-queue';
 import { useAudioStore } from '@/stores/audio-store';
 import { fetchSurahTafsir, TafsirError } from '@/data/api/tafsir';
 import { fetchSurahWordGlosses } from '@//data/api/word-by-word';
@@ -390,6 +391,7 @@ export default function SurahScreen() {
                         return;
                       }
 
+                      audioDownloadQueue.prioritize({ reciterId, surah: surahNumber, ayah: 1, totalAyahs: query.data?.numberOfAyahs ?? 0 });
                       play(surahNumber, 1);
                     }}
                   >
@@ -474,6 +476,7 @@ export default function SurahScreen() {
               onAyahPress={() => {
                 const ayahNumber = item.verse.numberInSurah;
                 updateProgress(surahNumber, ayahNumber);
+                audioDownloadQueue.prioritize({ reciterId, surah: surahNumber, ayah: ayahNumber, totalAyahs: query.data?.numberOfAyahs ?? 0 });
                 setSelection({ type: 'ayah', ayahNumber });
                 openComposer();
               }}

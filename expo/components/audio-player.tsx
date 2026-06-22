@@ -1,18 +1,19 @@
-import { Audio, type AVPlaybackStatus } from 'expo-av';
+import { Audio } from 'expo-av';
 import { Pause, Play, SkipBack, SkipForward, Square } from 'lucide-react-native';
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { palette } from '@/constants/colors';
-import { getAudioUrl } from '@/data/api/audio';
+import { cleanupAudioCache } from '@/data/api/audio-cache';
+import { audioDownloadQueue } from '@/data/api/audio-download-queue';
+import { audioPlaybackQueue } from '@/data/api/audio-playback-queue';
 import surahList from '@/data/surah-list.json';
 import { useAudioStore } from '@/stores/audio-store';
 
 export function AudioPlayer() {
   const insets = useSafeAreaInsets();
-  const soundRef = useRef<Audio.Sound | null>(null);
-  const failTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTrackKeyRef = useRef<string | null>(null);
   const { reciterId, isPlaying, currentSurah, currentAyah, pause, resume, stop, prevAyah, nextAyah } = useAudioStore();
 
   const totalAyahs = useMemo(() => {
@@ -23,21 +24,15 @@ export function AudioPlayer() {
     return surahList[currentSurah - 1]?.numberOfAyahs ?? 0;
   }, [currentSurah]);
 
-  const clearFailTimer = () => {
-    if (failTimerRef.current) {
-      clearTimeout(failTimerRef.current);
-      failTimerRef.current = null;
-    }
-  };
-
-  const unloadCurrent = async () => {
-    clearFailTimer();
-    if (soundRef.current) {
-      const sound = soundRef.current;
-      soundRef.current = null;
-      await sound.unloadAsync();
-    }
-  };
+  useEffect(() => {
+    audioPlaybackQueue.setOptions({
+      onFinish: () => nextAyah(totalAyahs),
+      onFatalError: (error) => {
+        console.warn('Audio playback failed after retries', error);
+        pause();
+      },
+    });
+  }, [nextAyah, pause, totalAyahs]);
 
   useEffect(() => {
     void Audio.setAudioModeAsync({
@@ -45,57 +40,39 @@ export function AudioPlayer() {
       playsInSilentModeIOS: true,
       shouldDuckAndroid: true,
     });
+    void cleanupAudioCache();
   }, []);
 
   useEffect(() => {
-    const loadAndPlay = async () => {
-      if (!currentSurah || !currentAyah || !isPlaying || !totalAyahs) {
-        return;
-      }
+    if (!currentSurah || !currentAyah || !totalAyahs) {
+      lastTrackKeyRef.current = null;
+      void audioPlaybackQueue.clear();
+      return;
+    }
 
-      try {
-        await unloadCurrent();
-        const url = getAudioUrl(currentSurah, currentAyah, reciterId);
-        const { sound } = await Audio.Sound.createAsync({ uri: url }, { shouldPlay: true });
-        sound.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
-          if (!status.isLoaded) {
-            return;
-          }
+    const trackKey = `${reciterId}:${currentSurah}:${currentAyah}`;
+    if (lastTrackKeyRef.current === trackKey) {
+      return;
+    }
+    lastTrackKeyRef.current = trackKey;
 
-          if (status.didJustFinish) {
-            nextAyah(totalAyahs);
-          }
-        });
-        soundRef.current = sound;
-      } catch {
-        clearFailTimer();
-        failTimerRef.current = setTimeout(() => {
-          nextAyah(totalAyahs);
-        }, 700);
-      }
-    };
-
-    void loadAndPlay();
-  }, [currentAyah, currentSurah, isPlaying, nextAyah, reciterId, totalAyahs]);
+    void audioPlaybackQueue.load({ reciterId, surah: currentSurah, ayah: currentAyah, totalAyahs }, isPlaying);
+  }, [currentAyah, currentSurah, isPlaying, reciterId, totalAyahs]);
 
   useEffect(() => {
-    const togglePlayback = async () => {
-      if (!soundRef.current) {
-        return;
-      }
-
-      if (isPlaying) {
-        await soundRef.current.playAsync();
-      } else {
-        await soundRef.current.pauseAsync();
-      }
-    };
-
-    void togglePlayback();
+    void audioPlaybackQueue.setPlaying(isPlaying);
   }, [isPlaying]);
 
+  useEffect(() => {
+    if (!currentSurah || !currentAyah || !totalAyahs) {
+      return;
+    }
+
+    audioDownloadQueue.prioritize({ reciterId, surah: currentSurah, ayah: currentAyah, totalAyahs });
+  }, [currentAyah, currentSurah, reciterId, totalAyahs]);
+
   useEffect(() => () => {
-    void unloadCurrent();
+    void audioPlaybackQueue.clear();
   }, []);
 
   if (!currentSurah || !currentAyah) {
