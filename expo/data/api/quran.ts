@@ -18,6 +18,22 @@ interface AlquranAyah {
 
 const ALQURAN_BASE = 'https://api.alquran.cloud/v1';
 
+const BISMILLAH_PREFIX = (() => {
+  const surah2 = ((quranOffline as QuranOfflineData)['2'] ?? [])[0];
+  if (!surah2) return '';
+  const words = surah2.arabic.split(' ');
+  return words.slice(0, -1).join(' ');
+})();
+
+function stripBismillahFromVerse1(verses: Verse[], surahNumber: number): Verse[] {
+  if (surahNumber === 1 || surahNumber === 9 || !BISMILLAH_PREFIX) return verses;
+  return verses.map((v) => {
+    if (v.numberInSurah !== 1 || !v.arabic.startsWith(BISMILLAH_PREFIX)) return v;
+    const arabic = v.arabic.slice(BISMILLAH_PREFIX.length).trim();
+    return { ...v, arabic };
+  });
+}
+
 async function fetchEditions(surahNumber: number, editions: string[]): Promise<AlquranAyah[][]> {
   const url =
     editions.length === 1
@@ -83,6 +99,6 @@ export async function fetchSurahDetail(
     englishNameTranslation: surah.englishNameTranslation,
     numberOfAyahs: surah.numberOfAyahs,
     revelationType: surah.revelationType,
-    verses,
+    verses: stripBismillahFromVerse1(verses, surahNumber),
   };
 }
