@@ -15,7 +15,7 @@ import { audioDownloadQueue } from '@/data/api/audio-download-queue';
 import { useAudioStore } from '@/stores/audio-store';
 import { fetchSurahTafsir, TafsirError } from '@/data/api/tafsir';
 import { fetchSurahWordGlosses } from '@//data/api/word-by-word';
-import { useNotes } from '@/providers/notes-provider';
+import { useNotesStore } from '@/stores/notes-store';
 import { TRANSLATIONS, useQuranSettingsStore } from '@/stores/quran-settings-store';
 import { useBookmarkStore } from '@/stores/bookmark-store';
 import type { NoteTag, UserNote, Verse } from '@/types/quran';
@@ -226,7 +226,7 @@ export default function SurahScreen() {
   const [composerInitialContent, setComposerInitialContent] = useState('');
   const [composerInitialTags, setComposerInitialTags] = useState<NoteTag[] | undefined>(undefined);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const { notes, notesForAyah, notesForSurah, addNote, updateNote, deleteNote } = useNotes();
+  const { notes, notesForAyah, notesForSurah, notesForWord, addNote, updateNote, deleteNote } = useNotesStore();
   const addBookmark = useBookmarkStore((state) => state.addBookmark);
   const removeBookmark = useBookmarkStore((state) => state.removeBookmark);
   const bookmarks = useBookmarkStore((state) => state.bookmarks);
@@ -251,13 +251,8 @@ export default function SurahScreen() {
       return notesForAyah(surahNumber, selection.ayahNumber);
     }
 
-    return notes.filter((note) => (
-      note.referenceType === 'word'
-      && note.surahNumber === surahNumber
-      && note.ayahNumber === selection.ayahNumber
-      && note.wordIndex === selection.wordIndex
-    ));
-  }, [chapterNotes, notes, notesForAyah, selection, surahNumber]);
+    return notesForWord(surahNumber, selection.ayahNumber, selection.wordIndex);
+  }, [chapterNotes, notesForAyah, notesForWord, selection, surahNumber]);
 
   const wordNoteMap = useMemo(() => {
     const map = new Map<number, Set<number>>();

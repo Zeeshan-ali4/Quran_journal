@@ -5,13 +5,13 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput } from 'react-native
 import { NoteCard } from '@/components/note-card';
 import { NoteComposer } from '@/components/note-composer';
 import { palette } from '@/constants/colors';
-import { useNotes } from '@/providers/notes-provider';
+import { useNotesStore } from '@/stores/notes-store';
 import type { NoteTag, UserNote } from '@/types/quran';
 
 const NOTE_TAGS: NoteTag[] = ['reflection', 'action', 'question', "du'a", 'theme'];
 
 export default function NotesScreen() {
-  const { searchNotes, isLoading, deleteNote, updateNote } = useNotes();
+  const { searchNotes, isLoading, deleteNote, updateNote } = useNotesStore();
   const [query, setQuery] = useState('');
   const [activeTag, setActiveTag] = useState<NoteTag | null>(null);
   const [editingNote, setEditingNote] = useState<UserNote | null>(null);
