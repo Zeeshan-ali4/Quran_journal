@@ -1,180 +1,21 @@
-#!/usr/bin/env python3
-"""CSIL Phase 1.4: local batch extraction and preview/catalogue builder.
-Windows + PowerPoint + pywin32. Original PPTX opened read-only.
-"""
-import argparse, csv, hashlib, json, re, traceback
-from pathlib import Path
-import pythoncom
-import win32com.client
 
-PP_BLANK = 12
-PP_PPTX = 24
+$deck = Get-ChildItem ".\input\*.pptx" |
+    Select-Object -First 1
 
-def flatten(items, depth=0):
-    out = {}
-    for o in items:
-        out[o['object_key']] = (o, depth)
-        out.update(flatten(o.get('children', []), depth+1))
-    return out
+$manifest = Get-ChildItem ".\output\*_manifest.json" |
+    Select-Object -First 1
 
-def clean(s):
-    return re.sub(r'[^a-zA-Z0-9_-]', '_', str(s))[:90]
+$candidates = Get-ChildItem ".\output\*_component_candidates.json" |
+    Select-Object -First 1
 
-def stable_id(deck, slide, keys, kind):
-    raw = json.dumps([deck, slide, sorted(keys), kind], separators=(',',':'))
-    return 'AST-' + hashlib.sha256(raw.encode()).hexdigest()[:16].upper()
-
-def get_shape(slide, shape_id):
-    for i in range(1, slide.Shapes.Count+1):
-        s = slide.Shapes(i)
-        if int(s.Id) == int(shape_id): return s
-    raise ValueError(f'Cannot locate native root shape ID {shape_id}')
-
-def make_jobs(manifest, candidates, deck_name, threshold, max_assets, include_slides):
-    by_slide = {int(s['slide_number']):s for s in manifest['slides']}
-    jobs=[]; seen=set()
-    if include_slides:
-        for sn in sorted(by_slide):
-            keys=[o['object_key'] for o in by_slide[sn]['objects']]
-            if not keys: continue
-            identity=(sn, tuple(sorted(keys)), 'full_slide')
-            if identity not in seen:
-                seen.add(identity)
-                jobs.append(dict(slide_number=sn, keys=keys, kind='full_slide', score=1.0,
-                                 reason='Full-slide editable copy', candidate_id=f'S{sn}-FULL'))
-    for c in candidates.get('candidates',[]):
-        sn=int(c['slide_number']); slide=by_slide.get(sn)
-        if not slide: continue
-        keys=c.get('object_keys') or []
-        objects=flatten(slide['objects'])
-        if not keys or any(k not in objects or objects[k][1] != 0 or objects[k][0].get('native_id') is None for k in keys):
-            continue
-        is_native=c.get('reason') == 'Native PowerPoint group'
-        score=float(c.get('heuristic_score') or 0)
-        if not is_native and score < threshold: continue
-        kind='native_group' if is_native else 'logical_candidate'
-        identity=(sn, tuple(sorted(keys)), kind)
-        if identity in seen: continue
-        seen.add(identity)
-        jobs.append(dict(slide_number=sn,keys=keys,kind=kind,score=score,
-                         reason=c.get('reason',''),candidate_id=c.get('candidate_id','')))
-    priority={'native_group':0,'logical_candidate':1,'full_slide':2}
-    jobs.sort(key=lambda j:(priority[j['kind']],j['slide_number'],-j['score'],j['candidate_id']))
-    return jobs[:max_assets] if max_assets else jobs
-
-def copy_shapes(src_slide, dest_slide, shape_ids):
-    shapes=[get_shape(src_slide, sid) for sid in shape_ids]
-    if len(shapes)==1: shapes[0].Copy()
-    else: src_slide.Shapes.Range(tuple(s.Name for s in shapes)).Copy()
-    pasted=dest_slide.Shapes.Paste()
-    if pasted.Count < 1: raise RuntimeError('Paste returned no shapes')
-    return int(pasted.Count)
-
-def export_one(app, source, slide, job, objects, target, preview):
-    dest=None
-    try:
-        dest=app.Presentations.Add(WithWindow=-1)
-        dest.PageSetup.SlideWidth=source.PageSetup.SlideWidth
-        dest.PageSetup.SlideHeight=source.PageSetup.SlideHeight
-        dst=dest.Slides.Add(1, PP_BLANK)
-        if job['kind']=='full_slide':
-            # Native copy keeps slide-level objects; master/theme behaviour still needs review.
-            src=source.Slides(job['slide_number'])
-            src.Copy()
-            pasted=dest.Slides.Paste(2)
-            dst.Delete()
-            dst=dest.Slides(1)
-            count=int(dst.Shapes.Count)
-        else:
-            ids=[int(objects[k][0]['native_id']) for k in job['keys']]
-            count=copy_shapes(slide,dst,ids)
-        dest.SaveAs(str(target), PP_PPTX)
-        # Export from the saved presentation slide; errors are reported separately.
-        preview_error=None
-        try:
-            dst.Export(str(preview), 'PNG', 1600, 900)
-        except Exception as e:
-            preview_error=str(e)
-        return count, preview_error
-    finally:
-        if dest is not None: dest.Close()
-
-def main():
-    ap=argparse.ArgumentParser(description='Build a local editable PowerPoint asset library')
-    ap.add_argument('pptx',type=Path)
-    ap.add_argument('manifest',type=Path)
-    ap.add_argument('candidates',type=Path)
-    ap.add_argument('--output',type=Path,default=Path('output/asset_library'))
-    ap.add_argument('--threshold',type=float,default=0.55,help='Minimum logical-candidate heuristic score (default 0.55)')
-    ap.add_argument('--max-assets',type=int,default=15,help='Pilot cap (default 15; 0 means all)')
-    ap.add_argument('--no-full-slides',action='store_true')
-    args=ap.parse_args()
-    for p in (args.pptx,args.manifest,args.candidates):
-        if not p.is_file(): ap.error(f'File not found: {p}')
-    if not 0 <= args.threshold <= 1: ap.error('--threshold must be between 0 and 1')
-    if args.max_assets < 0: ap.error('--max-assets must be nonnegative')
-    manifest=json.loads(args.manifest.read_text(encoding='utf-8'))
-    cand=json.loads(args.candidates.read_text(encoding='utf-8'))
-    if not isinstance(manifest.get('slides'),list) or not isinstance(cand.get('candidates'),list):
-        ap.error('Input JSON does not match CSIL v1/v2 schema')
-    root=args.output.resolve(); assets=root/'assets'; previews=root/'previews'
-    assets.mkdir(parents=True,exist_ok=True); previews.mkdir(parents=True,exist_ok=True)
-    jobs=make_jobs(manifest,cand,args.pptx.name,args.threshold,args.max_assets,not args.no_full_slides)
-    slide_index={int(s['slide_number']):s for s in manifest['slides']}
-    entries=[]
-    pythoncom.CoInitialize()
-    source=None
-    try:
-        app=win32com.client.Dispatch('PowerPoint.Application')
-        source=app.Presentations.Open(str(args.pptx.resolve()),ReadOnly=-1,Untitled=0,WithWindow=-1)
-        for ix,job in enumerate(jobs,1):
-            sn=job['slide_number']; objects=flatten(slide_index[sn]['objects'])
-            asset_id=stable_id(args.pptx.name,sn,job['keys'],job['kind'])
-            target=assets/f'{asset_id}.pptx'; preview=previews/f'{asset_id}.png'
-            record=dict(asset_id=asset_id,source_deck=args.pptx.name,source_slide=sn,
-                        candidate_id=job['candidate_id'],asset_type=job['kind'],
-                        detection_reason=job['reason'],heuristic_score=job['score'],
-                        source_object_keys=job['keys'],source_object_count=len(job['keys']),
-                        editable_pptx=str(target),preview_png=str(preview),
-                        validation_status='manual_review_required',status='pending',error='')
-            if target.exists():
-                record['status']='skipped_existing'
-                record['preview_status']='existing' if preview.exists() else 'missing'
-            else:
-                try:
-                    count, preview_error=export_one(app,source,source.Slides(sn),job,objects,target,preview)
-                    record['pasted_shape_count']=count
-                    record['status']='saved'
-                    record['preview_status']='failed' if preview_error else 'saved'
-                    if preview_error: record['error']='Preview: '+preview_error
-                except Exception as exc:
-                    record['status']='failed'; record['error']=str(exc)
-                    if target.exists():
-                        try: target.unlink()
-                        except OSError: pass
-            entries.append(record)
-            print(f"[{ix}/{len(jobs)}] {asset_id} slide={sn} type={job['kind']} -> {record['status']}")
-    finally:
-        if source is not None: source.Close()
-        pythoncom.CoUninitialize()
-    payload=dict(schema_version='0.4.0',source_deck=args.pptx.name,
-                 notes=['Native objects are copied, not rasterised; editability and fidelity require review.',
-                        'Logical candidates are geometry-based and can include unrelated objects.',
-                        'PowerPoint theme/master, linked media and chart dependencies may not transfer exactly.',
-                        'IDs are stable for the same deck filename, slide and object keys; renaming the deck changes IDs.',
-                        'Previews are slide-sized PNGs; they may include whitespace.'],assets=entries)
-    (root/'catalogue.json').write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding='utf-8')
-    columns=['asset_id','source_deck','source_slide','candidate_id','asset_type','detection_reason',
-             'heuristic_score','source_object_count','status','preview_status','validation_status',
-             'editable_pptx','preview_png','error']
-    with (root/'catalogue.csv').open('w',encoding='utf-8-sig',newline='') as f:
-        writer=csv.DictWriter(f,fieldnames=columns,extrasaction='ignore');writer.writeheader();writer.writerows(entries)
-    (root/'extraction_report.json').write_text(json.dumps({
-        'attempted':len(entries),'saved':sum(e['status']=='saved' for e in entries),
-        'skipped_existing':sum(e['status']=='skipped_existing' for e in entries),
-        'failed':sum(e['status']=='failed' for e in entries),
-        'preview_failures':sum(e.get('preview_status')=='failed' for e in entries),
-        'review_required':True},indent=2),encoding='utf-8')
-    print(f'Finished. Catalogue: {root / "catalogue.csv"}')
-
-if __name__=='__main__': main()
+if (!$deck -or !$manifest -or !$candidates) {
+    Write-Host "Missing input files. Check your folders."
+} else {
+    py .\src\build_asset_library.py `
+        $deck.FullName `
+        $manifest.FullName `
+        $candidates.FullName `
+        --output ".\output\asset_library" `
+        --threshold 0.55 `
+        --max-assets 15
+}
