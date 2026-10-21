@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""PowerPoint OOXML structural inventory. Python standard library only."""
+import argparse
+import csv
+import json
+import posixpath
+import re
+import zipfile
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+NS = {
+    'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+    'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+    'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+    'pr': 'http://schemas.openxmlformats.org/package/2006/relationships',
+}
+EMU_PER_INCH = 914400
+
+def q(prefix, name):
+    return '{%s}%s' % (NS[prefix], name)
+
+def relationship_map(zf, part):
+    folder, filename = posixpath.split(part)
+    rels_path = posixpath.join(folder, '_rels', filename + '.rels')
+    if rels_path not in zf.namelist():
+        return {}
+    root = ET.fromstring(zf.read(rels_path))
+    result = {}
+    for rel in root:
+        if rel.attrib.get('TargetMode') == 'External':
+            target = rel.attrib.get('Target')
+        else:
+            raw = rel.attrib.get('Target', '')
+            if raw.startswith('/'):
+                target = raw.lstrip('/')
+            else:
+                target = posixpath.normpath(posixpath.join(folder, raw))
+        result[rel.attrib.get('Id')] = {
+            'type': rel.attrib.get('Type', '').split('/')[-1],
+            'target': target,
+            'external': rel.attrib.get('TargetMode') == 'External',
+        }
+    return result
+
+def inches(value):
+    return round(int(value) / EMU_PER_INCH, 4) if value is not None else None
+
+def shape_geometry(el):
+    xfrm = el.find('./a:spPr/a:xfrm', NS)
+    if xfrm is None:
+        xfrm = el.find('./p:spPr/a:xfrm', NS)
+    if xfrm is None:
+        xfrm = el.find('./p:grpSpPr/a:xfrm', NS)
+    if xfrm is None:
+        xfrm = el.find('./a:xfrm', NS)
+    if xfrm is None:
+        return None
+    off = xfrm.find('a:off', NS)
+    ext = xfrm.find('a:ext', NS)
+    data = {
+        'x_in': inches(off.get('x')) if off is not None else None,
+        'y_in': inches(off.get('y')) if off is not None else None,
+        'width_in': inches(ext.get('cx')) if ext is not None else None,
+        'height_in': inches(ext.get('cy')) if ext is not None else None,
+        'rotation_deg': round(int(xfrm.get('rot', '0')) / 60000, 3),
+        'flip_h': xfrm.get('flipH') == '1',
+        'flip_v': xfrm.get('flipV') == '1',
+    }
+    if el.tag == q('p', 'grpSp'):
+        child_off = xfrm.find('a:chOff', NS)
+        child_ext = xfrm.find('a:chExt', NS)
+        data['group_child_origin_emu'] = {k: int(child_off.get(k)) for k in ('x', 'y')} if child_off is not None else None
+        data['group_child_extent_emu'] = {k: int(child_ext.get(k)) for k in ('cx', 'cy')} if child_ext is not None else None
+    return data
+
+def classify(el):
+    tag = el.tag.split('}')[-1]
+    if tag == 'grpSp': return 'group'
+    if tag == 'pic': return 'image'
+    if tag == 'cxnSp': return 'connector'
+    if tag == 'graphicFrame':
+        graphic = el.find('.//a:graphicData', NS)
+        uri = graphic.get('uri', '') if graphic is not None else ''
+        if uri.endswith('/table'): return 'table'
+        if uri.endswith('/chart'): return 'chart'
+        return 'graphic_frame'
+    if tag == 'sp': return 'shape'
+    if tag == 'contentPart': return 'content_part'
+    return tag
+
+def parse_object(el, rels, slide_num, ancestry=()):
+    kind = classify(el)
+    nv = None
+    for nv_name in ('nvSpPr', 'nvPicPr', 'nvGrpSpPr', 'nvCxnSpPr', 'nvGraphicFramePr', 'nvContentPartPr'):
+        nv = el.find('p:' + nv_name, NS)
+        if nv is not None: break
+    c_nv = nv.find('p:cNvPr', NS) if nv is not None else None
+    oid = c_nv.get('id') if c_nv is not None else None
+    name = c_nv.get('name', '') if c_nv is not None else ''
+    texts = [t.text for t in el.findall('./p:txBody/a:p/a:r/a:t', NS) if t.text]
+    texts += [t.text for t in el.findall('./p:txBody/a:p/a:fld/a:t', NS) if t.text]
+    # Include paragraph direct text nodes, if present.
+    texts += [t.text for t in el.findall('./p:txBody/a:p/a:t', NS) if t.text]
+    text = ' '.join(texts)
+    rid_refs = []
+    for node in el.iter():
+        for attr, value in node.attrib.items():
+            if attr.startswith('{' + NS['r'] + '}') and value in rels:
+                item = dict(rels[value])
+                item['relationship_id'] = value
+                if item not in rid_refs: rid_refs.append(item)
+    obj = {
+        'object_key': f'slide{slide_num}:object{oid}' if oid else f'slide{slide_num}:unnamed:{name}',
+        'native_id': oid,
+        'name': name,
+        'type': kind,
+        'parent_group_ids': list(ancestry),
+        'geometry_local': shape_geometry(el),
+        'text': text[:2000],
+        'text_truncated': len(text) > 2000,
+        'relationships': rid_refs if kind != 'group' else [],
+        'editable_capabilities_inferred': {
+            'native_shape': kind in ('shape', 'connector', 'group'),
+            'text': kind == 'shape' and bool(el.find('p:txBody', NS) is not None),
+            'table_cells': kind == 'table',
+            'chart_data_potential': kind == 'chart',
+            'image_replacement': kind == 'image',
+        },
+        'children': [],
+    }
+    if kind == 'group':
+        children = [c for c in el if c.tag in OBJECT_TAGS]
+        obj['children'] = [parse_object(c, rels, slide_num, ancestry + ((oid or name),)) for c in children]
+    return obj
+
+OBJECT_TAGS = {q('p', t) for t in ('sp', 'pic', 'grpSp', 'cxnSp', 'graphicFrame', 'contentPart')}
+
+def flatten(objects):
+    for obj in objects:
+        yield obj
+        yield from flatten(obj['children'])
+
+def inspect_pptx(path):
+    with zipfile.ZipFile(path) as zf:
+        names = set(zf.namelist())
+        if 'ppt/presentation.xml' not in names:
+            raise ValueError('Not a valid PPTX: missing ppt/presentation.xml')
+        pres = ET.fromstring(zf.read('ppt/presentation.xml'))
+        pres_rels = relationship_map(zf, 'ppt/presentation.xml')
+        size = pres.find('p:sldSz', NS)
+        sld_ids = pres.find('p:sldIdLst', NS)
+        slides = []
+        for i, sid in enumerate(list(sld_ids) if sld_ids is not None else [], 1):
+            rid = sid.get(q('r', 'id'))
+            info = pres_rels.get(rid)
+            if not info or info['target'] not in names:
+                raise ValueError(f'Missing slide relationship for slide {i}')
+            part = info['target']
+            root = ET.fromstring(zf.read(part))
+            rels = relationship_map(zf, part)
+            tree = root.find('./p:cSld/p:spTree', NS)
+            objects = [parse_object(c, rels, i) for c in tree if c.tag in OBJECT_TAGS] if tree is not None else []
+            flat = list(flatten(objects))
+            counts = {}
+            for obj in flat: counts[obj['type']] = counts.get(obj['type'], 0) + 1
+            slides.append({
+                'slide_number': i,
+                'slide_part': part,
+                'native_slide_id': sid.get('id'),
+                'object_count': len(flat),
+                'object_types': counts,
+                'objects': objects,
+                'candidate_assets': [
+                    {'object_key': o['object_key'], 'reason': 'Native group', 'type': 'native_group'}
+                    for o in flat if o['type'] == 'group' and len(o['children']) >= 2
+                ],
+            })
+        return {
+            'schema_version': '0.1.0',
+            'source_filename': path.name,
+            'slide_count': len(slides),
+            'slide_size_inches': {
+                'width': inches(size.get('cx')) if size is not None else None,
+                'height': inches(size.get('cy')) if size is not None else None,
+            },
+            'notes': [
+                'Group child geometry uses local coordinate systems; not yet transformed to slide coordinates.',
+                'Editability fields are inferred from object type, not validated by PowerPoint.',
+                'Unsupported or unusual OOXML object types may not appear in this inventory.',
+                'No standalone editable asset files or previews are generated in this version.',
+            ],
+            'slides': slides,
+        }
+
+def main():
+    parser = argparse.ArgumentParser(description='Inspect PPTX slide objects without external dependencies')
+    parser.add_argument('pptx', type=Path)
+    parser.add_argument('--output', type=Path, default=Path('output'))
+    args = parser.parse_args()
+    if not args.pptx.is_file(): parser.error(f'File not found: {args.pptx}')
+    args.output.mkdir(parents=True, exist_ok=True)
+    manifest = inspect_pptx(args.pptx)
+    stem = re.sub(r'[^A-Za-z0-9_-]+', '_', args.pptx.stem)
+    json_path = args.output / f'{stem}_manifest.json'
+    csv_path = args.output / f'{stem}_objects.csv'
+    json_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    with csv_path.open('w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['slide_number','object_key','native_id','name','type','parent_group_ids','x_in_local','y_in_local','width_in_local','height_in_local','text'])
+        for slide in manifest['slides']:
+            for obj in flatten(slide['objects']):
+                g = obj['geometry_local'] or {}
+                writer.writerow([slide['slide_number'], obj['object_key'], obj['native_id'], obj['name'], obj['type'], '/'.join(map(str,obj['parent_group_ids'])), g.get('x_in'),g.get('y_in'),g.get('width_in'),g.get('height_in'),obj['text']])
+    print(f"Slides: {manifest['slide_count']}")
+    print(f"Objects: {sum(s['object_count'] for s in manifest['slides'])}")
+    print(f'Manifest: {json_path}')
+    print(f'CSV: {csv_path}')
+
+if __name__ == '__main__':
+    main()
