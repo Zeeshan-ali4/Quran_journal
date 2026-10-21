@@ -1,131 +1,14 @@
-#!/usr/bin/env python3
-"""CSIL v3 pilot: copy one candidate's top-level native PowerPoint shapes.
-Requires Windows, desktop PowerPoint and pywin32. Source deck is opened read-only.
-"""
-import argparse
-import json
-import re
-from pathlib import Path
 
-import pythoncom
-import win32com.client
+$manifest = Get-ChildItem ".\output\*_manifest.json" | Select-Object -First 1
+$candidates = Get-ChildItem ".\output\*_component_candidates.json" | Select-Object -First 1
+$deck = Get-ChildItem ".\input\*.pptx" | Select-Object -First 1
 
-
-def find_objects(objects):
-    found = {}
-    def walk(items, depth=0):
-        for obj in items:
-            found[obj['object_key']] = (obj, depth)
-            walk(obj.get('children', []), depth + 1)
-    walk(objects)
-    return found
-
-
-def choose_candidate(data, manifest, requested=None):
-    by_slide = {s['slide_number']: s for s in manifest['slides']}
-    options = []
-    for candidate in data['candidates']:
-        if requested and candidate['candidate_id'] != requested:
-            continue
-        slide = by_slide.get(candidate['slide_number'])
-        if not slide:
-            continue
-        objects = find_objects(slide['objects'])
-        keys = candidate.get('object_keys', [])
-        if not keys or any(k not in objects for k in keys):
-            continue
-        if any(objects[k][1] != 0 for k in keys):
-            continue  # Nested group children require a separate extraction strategy.
-        if any(objects[k][0].get('native_id') is None for k in keys):
-            continue
-        options.append((candidate, slide, [objects[k][0] for k in keys]))
-    if not options:
-        raise ValueError('No extractable top-level candidate found. Try --candidate with a top-level candidate ID.')
-    # Prefer native groups over spatially inferred clusters for the first fidelity test.
-    options.sort(key=lambda item: (item[0].get('reason') != 'Native PowerPoint group',
-                                   -item[0].get('heuristic_score', 0)))
-    return options[0]
-
-
-def main():
-    ap = argparse.ArgumentParser(description='Extract one editable PowerPoint candidate (pilot)')
-    ap.add_argument('pptx', type=Path, help='Original PPTX source')
-    ap.add_argument('manifest', type=Path, help='CSIL v1 JSON manifest')
-    ap.add_argument('candidates', type=Path, help='CSIL v2 candidates JSON')
-    ap.add_argument('--candidate', help='Exact candidate_id (otherwise prefer first native group)')
-    ap.add_argument('--output', type=Path, default=Path('output/extracted_assets'))
-    args = ap.parse_args()
-    for p in (args.pptx, args.manifest, args.candidates):
-        if not p.is_file():
-            ap.error(f'File not found: {p}')
-    manifest = json.loads(args.manifest.read_text(encoding='utf-8'))
-    data = json.loads(args.candidates.read_text(encoding='utf-8'))
-    candidate, slide_info, objects = choose_candidate(data, manifest, args.candidate)
-    args.output.mkdir(parents=True, exist_ok=True)
-    clean_id = re.sub(r'[^A-Za-z0-9_-]', '_', candidate['candidate_id'])
-    target = (args.output / f'{clean_id}.pptx').resolve()
-    if target.exists():
-        raise FileExistsError(f'Refusing to overwrite existing asset: {target}')
-
-    pythoncom.CoInitialize()
-    app = None
-    source = None
-    dest = None
-    try:
-        app = win32com.client.Dispatch('PowerPoint.Application')
-        # Open with no edit rights to the source file; use desktop PowerPoint's native object model.
-        source = app.Presentations.Open(str(args.pptx.resolve()), ReadOnly=-1, Untitled=0, WithWindow=-1)
-        slide = source.Slides(candidate['slide_number'])
-        selected = []
-        for obj in objects:
-            native_id = int(obj['native_id'])
-            matching = [slide.Shapes(i) for i in range(1, slide.Shapes.Count + 1)
-                        if slide.Shapes(i).Id == native_id]
-            if len(matching) != 1:
-                raise RuntimeError(f'Cannot uniquely resolve root shape ID {native_id} on slide {candidate["slide_number"]}')
-            selected.append(matching[0])
-        # Copy a single group intact, or a range of slide-level shapes as a unit.
-        if len(selected) == 1:
-            selected[0].Copy()
-        else:
-            slide.Shapes.Range(tuple(s.Name for s in selected)).Copy()
-
-        dest = app.Presentations.Add(WithWindow=-1)
-        dest.PageSetup.SlideWidth = source.PageSetup.SlideWidth
-        dest.PageSetup.SlideHeight = source.PageSetup.SlideHeight
-        new_slide = dest.Slides.Add(1, 12)  # ppLayoutBlank
-        pasted = new_slide.Shapes.Paste()  # Native editable objects, not an image paste.
-        if pasted.Count == 0:
-            raise RuntimeError('PowerPoint returned no pasted shapes')
-        dest.SaveAs(str(target), 24)  # ppSaveAsOpenXMLPresentation
-        report = {
-            'source_deck': args.pptx.name,
-            'source_slide': candidate['slide_number'],
-            'candidate_id': candidate['candidate_id'],
-            'detection_reason': candidate.get('reason'),
-            'source_object_keys': candidate['object_keys'],
-            'pasted_top_level_shape_count': pasted.Count,
-            'output_pptx': str(target),
-            'status': 'saved_requires_manual_visual_and_editability_review',
-            'limitations': [
-                'Copies top-level shapes only; nested logical selections are skipped.',
-                'Output slide retains original slide dimensions and object positions.',
-                'Native editable objects are pasted, but some links, fonts, charts, and theme dependencies may change.',
-                'This pilot does not validate rendering fidelity or content sensitivity.'
-            ]
-        }
-        report_path = target.with_suffix('.json')
-        report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
-        print(f'Extracted candidate: {candidate["candidate_id"]}')
-        print(f'Saved: {target}')
-        print(f'Report: {report_path}')
-    finally:
-        if dest is not None:
-            dest.Close()
-        if source is not None:
-            source.Close()
-        pythoncom.CoUninitialize()
-
-
-if __name__ == '__main__':
-    main()
+if (!$manifest -or !$candidates -or !$deck) {
+    Write-Host "Missing input deck, manifest, or candidates file."
+} else {
+    py .\src\extract_assets.py `
+        $deck.FullName `
+        $manifest.FullName `
+        $candidates.FullName `
+        --output ".\output\extracted_assets"
+}
