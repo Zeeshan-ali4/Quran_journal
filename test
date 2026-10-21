@@ -1,98 +1,131 @@
 #!/usr/bin/env python3
-"""CSIL v2: heuristic logical-component candidates from a v1 PPTX manifest.
-Standard library only. Does not modify PowerPoint files.
+"""CSIL v3 pilot: copy one candidate's top-level native PowerPoint shapes.
+Requires Windows, desktop PowerPoint and pywin32. Source deck is opened read-only.
 """
-import argparse, csv, json, math
+import argparse
+import json
+import re
 from pathlib import Path
 
-VISUAL_TYPES = {'shape', 'image', 'connector', 'table', 'chart', 'graphic_frame', 'group'}
+import pythoncom
+import win32com.client
 
-def rect(obj):
-    g = obj.get('geometry_local') or {}
-    vals = [g.get(k) for k in ('x_in','y_in','width_in','height_in')]
-    if any(v is None or not isinstance(v, (float,int)) for v in vals): return None
-    x,y,w,h = vals
-    if w <= 0 or h <= 0: return None
-    return (x,y,x+w,y+h)
 
-def gap(a,b):
-    dx = max(0, a[0]-b[2], b[0]-a[2])
-    dy = max(0, a[1]-b[3], b[1]-a[3])
-    return math.hypot(dx,dy)
+def find_objects(objects):
+    found = {}
+    def walk(items, depth=0):
+        for obj in items:
+            found[obj['object_key']] = (obj, depth)
+            walk(obj.get('children', []), depth + 1)
+    walk(objects)
+    return found
 
-def bbox(rects):
-    return [round(min(r[0] for r in rects),3),round(min(r[1] for r in rects),3),
-            round(max(r[2] for r in rects),3),round(max(r[3] for r in rects),3)]
 
-def candidate(slide, objects, reason, score):
-    rr=[rect(o) for o in objects if rect(o)]
-    return {'slide_number':slide,'candidate_id':f'S{slide}-C{len(objects)}-'+objects[0]['object_key'].split(':')[-1],
-            'object_keys':[o['object_key'] for o in objects],
-            'object_count':len(objects),'bounds_local_inches':bbox(rr) if rr else None,
-            'reason':reason,'heuristic_score':round(score,2),
-            'review_required':True}
+def choose_candidate(data, manifest, requested=None):
+    by_slide = {s['slide_number']: s for s in manifest['slides']}
+    options = []
+    for candidate in data['candidates']:
+        if requested and candidate['candidate_id'] != requested:
+            continue
+        slide = by_slide.get(candidate['slide_number'])
+        if not slide:
+            continue
+        objects = find_objects(slide['objects'])
+        keys = candidate.get('object_keys', [])
+        if not keys or any(k not in objects for k in keys):
+            continue
+        if any(objects[k][1] != 0 for k in keys):
+            continue  # Nested group children require a separate extraction strategy.
+        if any(objects[k][0].get('native_id') is None for k in keys):
+            continue
+        options.append((candidate, slide, [objects[k][0] for k in keys]))
+    if not options:
+        raise ValueError('No extractable top-level candidate found. Try --candidate with a top-level candidate ID.')
+    # Prefer native groups over spatially inferred clusters for the first fidelity test.
+    options.sort(key=lambda item: (item[0].get('reason') != 'Native PowerPoint group',
+                                   -item[0].get('heuristic_score', 0)))
+    return options[0]
 
-def detect(slide, threshold):
-    result=[]
-    # Existing native groups are preserved as separate, higher-confidence candidates.
-    def walk(items):
-        for o in items:
-            if o.get('type')=='group' and len(o.get('children',[]))>=2:
-                result.append({'slide_number':slide['slide_number'], 'candidate_id':f"S{slide['slide_number']}-G{o['native_id']}",
-                    'object_keys':[o['object_key']], 'object_count':len(o['children']),
-                    'bounds_local_inches':list(rect(o)) if rect(o) else None,
-                    'reason':'Native PowerPoint group', 'heuristic_score':0.95,'review_required':True})
-            walk(o.get('children',[]))
-    walk(slide['objects'])
-    # Only compare siblings at the slide root. Group children use another coordinate system.
-    items=[o for o in slide['objects'] if o.get('type') in VISUAL_TYPES and rect(o)]
-    # Exclude likely background shapes covering most of the slide.
-    items=[o for o in items if (rect(o)[2]-rect(o)[0])*(rect(o)[3]-rect(o)[1]) < 45]
-    n=len(items)
-    parent=list(range(n))
-    def find(i):
-        while parent[i]!=i:
-            parent[i]=parent[parent[i]]; i=parent[i]
-        return i
-    def union(i,j):
-        ri,rj=find(i),find(j)
-        if ri!=rj:parent[rj]=ri
-    for i in range(n):
-        for j in range(i+1,n):
-            a,b=rect(items[i]),rect(items[j])
-            if gap(a,b)<=threshold: union(i,j)
-    clusters={}
-    for i,o in enumerate(items): clusters.setdefault(find(i),[]).append(o)
-    for members in clusters.values():
-        if 2<=len(members)<=40:
-            # Proximity alone is weak evidence: cap scores deliberately.
-            result.append(candidate(slide['slide_number'],members,'Spatial proximity among slide-level objects; not semantic proof',min(0.7,0.35+0.035*len(members))))
-    return result
 
 def main():
-    ap=argparse.ArgumentParser()
-    ap.add_argument('manifest',type=Path)
-    ap.add_argument('--output',type=Path,default=Path('output'))
-    ap.add_argument('--gap',type=float,default=0.12,help='Max edge gap in inches (default 0.12)')
-    args=ap.parse_args()
-    data=json.loads(args.manifest.read_text(encoding='utf-8'))
-    if not isinstance(data.get('slides'),list): ap.error('Not a CSIL v1 manifest')
-    args.output.mkdir(parents=True,exist_ok=True)
-    candidates=[c for s in data['slides'] for c in detect(s,args.gap)]
-    out={'schema_version':'0.2.0','source_manifest':args.manifest.name,
-         'method':'Deterministic native grouping + simple spatial clustering',
-         'warnings':['Spatial proximity is not semantic understanding. Review all candidates.',
-                     'Coordinates are local; nested groups are not spatially clustered.',
-                     'Background filtering uses a crude fixed area threshold and may need adjustment.',
-                     'No PowerPoint assets are extracted or modified.'],
-         'candidates':candidates}
-    stem=args.manifest.stem.replace('_manifest','')
-    jp=args.output/f'{stem}_component_candidates.json'
-    cp=args.output/f'{stem}_component_candidates.csv'
-    jp.write_text(json.dumps(out,indent=2,ensure_ascii=False),encoding='utf-8')
-    with cp.open('w',encoding='utf-8-sig',newline='') as f:
-        w=csv.writer(f);w.writerow(['slide_number','candidate_id','reason','heuristic_score','object_count','object_keys'])
-        for c in candidates:w.writerow([c['slide_number'],c['candidate_id'],c['reason'],c['heuristic_score'],c['object_count'],';'.join(c['object_keys'])])
-    print(f'Candidates: {len(candidates)} | JSON: {jp} | CSV: {cp}')
+    ap = argparse.ArgumentParser(description='Extract one editable PowerPoint candidate (pilot)')
+    ap.add_argument('pptx', type=Path, help='Original PPTX source')
+    ap.add_argument('manifest', type=Path, help='CSIL v1 JSON manifest')
+    ap.add_argument('candidates', type=Path, help='CSIL v2 candidates JSON')
+    ap.add_argument('--candidate', help='Exact candidate_id (otherwise prefer first native group)')
+    ap.add_argument('--output', type=Path, default=Path('output/extracted_assets'))
+    args = ap.parse_args()
+    for p in (args.pptx, args.manifest, args.candidates):
+        if not p.is_file():
+            ap.error(f'File not found: {p}')
+    manifest = json.loads(args.manifest.read_text(encoding='utf-8'))
+    data = json.loads(args.candidates.read_text(encoding='utf-8'))
+    candidate, slide_info, objects = choose_candidate(data, manifest, args.candidate)
+    args.output.mkdir(parents=True, exist_ok=True)
+    clean_id = re.sub(r'[^A-Za-z0-9_-]', '_', candidate['candidate_id'])
+    target = (args.output / f'{clean_id}.pptx').resolve()
+    if target.exists():
+        raise FileExistsError(f'Refusing to overwrite existing asset: {target}')
 
-if __name__=='__main__': main()
+    pythoncom.CoInitialize()
+    app = None
+    source = None
+    dest = None
+    try:
+        app = win32com.client.Dispatch('PowerPoint.Application')
+        # Open with no edit rights to the source file; use desktop PowerPoint's native object model.
+        source = app.Presentations.Open(str(args.pptx.resolve()), ReadOnly=-1, Untitled=0, WithWindow=-1)
+        slide = source.Slides(candidate['slide_number'])
+        selected = []
+        for obj in objects:
+            native_id = int(obj['native_id'])
+            matching = [slide.Shapes(i) for i in range(1, slide.Shapes.Count + 1)
+                        if slide.Shapes(i).Id == native_id]
+            if len(matching) != 1:
+                raise RuntimeError(f'Cannot uniquely resolve root shape ID {native_id} on slide {candidate["slide_number"]}')
+            selected.append(matching[0])
+        # Copy a single group intact, or a range of slide-level shapes as a unit.
+        if len(selected) == 1:
+            selected[0].Copy()
+        else:
+            slide.Shapes.Range(tuple(s.Name for s in selected)).Copy()
+
+        dest = app.Presentations.Add(WithWindow=-1)
+        dest.PageSetup.SlideWidth = source.PageSetup.SlideWidth
+        dest.PageSetup.SlideHeight = source.PageSetup.SlideHeight
+        new_slide = dest.Slides.Add(1, 12)  # ppLayoutBlank
+        pasted = new_slide.Shapes.Paste()  # Native editable objects, not an image paste.
+        if pasted.Count == 0:
+            raise RuntimeError('PowerPoint returned no pasted shapes')
+        dest.SaveAs(str(target), 24)  # ppSaveAsOpenXMLPresentation
+        report = {
+            'source_deck': args.pptx.name,
+            'source_slide': candidate['slide_number'],
+            'candidate_id': candidate['candidate_id'],
+            'detection_reason': candidate.get('reason'),
+            'source_object_keys': candidate['object_keys'],
+            'pasted_top_level_shape_count': pasted.Count,
+            'output_pptx': str(target),
+            'status': 'saved_requires_manual_visual_and_editability_review',
+            'limitations': [
+                'Copies top-level shapes only; nested logical selections are skipped.',
+                'Output slide retains original slide dimensions and object positions.',
+                'Native editable objects are pasted, but some links, fonts, charts, and theme dependencies may change.',
+                'This pilot does not validate rendering fidelity or content sensitivity.'
+            ]
+        }
+        report_path = target.with_suffix('.json')
+        report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+        print(f'Extracted candidate: {candidate["candidate_id"]}')
+        print(f'Saved: {target}')
+        print(f'Report: {report_path}')
+    finally:
+        if dest is not None:
+            dest.Close()
+        if source is not None:
+            source.Close()
+        pythoncom.CoUninitialize()
+
+
+if __name__ == '__main__':
+    main()
