@@ -1,21 +1,14 @@
 
-$deck = Get-ChildItem ".\input\*.pptx" |
-    Select-Object -First 1
+$library = ".\output\asset_library"
 
-$manifest = Get-ChildItem ".\output\*_manifest.json" |
-    Select-Object -First 1
+Write-Host "PPTX assets:" (
+    (Get-ChildItem "$library\assets" -Filter *.pptx).Count
+)
 
-$candidates = Get-ChildItem ".\output\*_component_candidates.json" |
-    Select-Object -First 1
+Write-Host "PNG previews:" (
+    (Get-ChildItem "$library\previews" -Filter *.png).Count
+)
 
-if (!$deck -or !$manifest -or !$candidates) {
-    Write-Host "Missing input files. Check your folders."
-} else {
-    py .\src\build_asset_library.py `
-        $deck.FullName `
-        $manifest.FullName `
-        $candidates.FullName `
-        --output ".\output\asset_library" `
-        --threshold 0.55 `
-        --max-assets 15
-}
+Write-Host "Catalogue records:" (
+    (Import-Csv "$library\catalogue.csv").Count
+)
