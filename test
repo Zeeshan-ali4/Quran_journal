@@ -1,183 +1,209 @@
 #!/usr/bin/env python3
-"""CSIL Phase 1.6: fully local Ollama visual + semantic classification.
-Standard library only. Never modifies source assets or the original catalogue.
+"""CSIL 1.6C: local, resumable, duplicate-aware AI classification.
+Default --plan performs NO model calls. --run N classifies N priority assets.
+Only exact-identical PNG bytes are automatically reused; no fuzzy propagation.
 """
-import argparse, base64, csv, json, os, re, sys, time, urllib.request, urllib.error
+import argparse, base64, csv, hashlib, json, os, re, time, urllib.request, urllib.error
+from collections import Counter, defaultdict
 from pathlib import Path
 
-SCHEMA = {
- "type":"object","properties":{
-  "asset_name":{"type":"string"},"asset_type":{"type":"string"},
-  "description":{"type":"string"},"visual_structure":{"type":"string"},
-  "communication_intent":{"type":"string"},"consulting_framework":{"type":"string"},
-  "consulting_use_cases":{"type":"array","items":{"type":"string"}},
-  "search_keywords":{"type":"array","items":{"type":"string"}},
-  "confidence":{"type":"number"},"requires_human_review":{"type":"boolean"}
- },"required":["asset_name","asset_type","description","visual_structure",
- "communication_intent","consulting_framework","consulting_use_cases",
- "search_keywords","confidence","requires_human_review"],
- "additionalProperties":False}
-FIELDS=list(SCHEMA["properties"])
+FIELDS = ['asset_name','asset_type','description','visual_structure','communication_intent',
+          'consulting_framework','consulting_use_cases','search_keywords','confidence','requires_human_review']
+SCHEMA = {'type':'object','properties':{
+ 'asset_name':{'type':'string'},'asset_type':{'type':'string'},'description':{'type':'string'},
+ 'visual_structure':{'type':'string'},'communication_intent':{'type':'string'},
+ 'consulting_framework':{'type':'string'},
+ 'consulting_use_cases':{'type':'array','items':{'type':'string'}},
+ 'search_keywords':{'type':'array','items':{'type':'string'}},
+ 'confidence':{'type':'number'},'requires_human_review':{'type':'boolean'}},
+ 'required':FIELDS,'additionalProperties':False}
 
-def atomic_json(path, value):
-    tmp=path.with_suffix(path.suffix+".tmp")
-    tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding="utf-8")
+def write_json(path, data):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    tmp=path.with_suffix(path.suffix+'.tmp')
+    tmp.write_text(json.dumps(data,indent=2,ensure_ascii=False),encoding='utf-8')
     os.replace(tmp,path)
 
-def ollama(host, model, messages, timeout, temperature=0):
-    data=json.dumps({"model":model,"messages":messages,"stream":False,
-                     "format":SCHEMA,"options":{"temperature":temperature,"num_ctx":4096,"num_predict":420},
-                     "keep_alive":"10m"}).encode("utf-8")
-    request=urllib.request.Request(host.rstrip("/")+"/api/chat",data=data,
-                                   headers={"Content-Type":"application/json"})
-    try:
-        with urllib.request.urlopen(request,timeout=timeout) as response:
-            raw=json.load(response)
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Ollama HTTP {e.code}: {e.read(1200).decode('utf-8','replace')}") from e
-    content=raw.get("message",{}).get("content","")
-    if not content: raise ValueError("Empty model response")
-    try: obj=json.loads(content)
-    except json.JSONDecodeError:
-        match=re.search(r"\{.*\}",content,re.S)
-        if not match: raise ValueError("Response was not JSON: "+content[:250])
-        obj=json.loads(match.group())
-    if not isinstance(obj,dict): raise ValueError("Expected JSON object")
-    for field in FIELDS:
-        if field not in obj: raise ValueError("Missing JSON field: "+field)
-    for field in ("consulting_use_cases","search_keywords"):
-        if not isinstance(obj[field],list) or not all(isinstance(x,str) for x in obj[field]):
-            raise ValueError(f"{field} must be a list of strings")
-    if not isinstance(obj["confidence"],(int,float)) or isinstance(obj["confidence"],bool):
-        raise ValueError("confidence must be a number")
-    obj["confidence"]=max(0.0,min(1.0,float(obj["confidence"])))
-    if not isinstance(obj["requires_human_review"],bool):
-        raise ValueError("requires_human_review must be boolean")
-    return obj
+def load_json(path,default=None):
+    try: return json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError,ValueError): return default
 
-def metadata(entry):
-    keys=["asset_id","asset_type","asset_category","source_deck","source_slide",
-          "extracted_text","native_shape_count","native_group_count","picture_count",
-          "chart_reference_count","table_count","communication_intent",
-          "consulting_use_case","visual_structure","review_reasons"]
-    return {k:entry[k] for k in keys if k in entry}
+def validate(c):
+    if not isinstance(c,dict) or any(k not in c for k in FIELDS): return False
+    if any(not isinstance(c[k],str) for k in FIELDS[:6]): return False
+    if any(not isinstance(c[k],list) or any(not isinstance(v,str) for v in c[k]) for k in ('consulting_use_cases','search_keywords')): return False
+    if not isinstance(c['confidence'],(int,float)) or isinstance(c['confidence'],bool): return False
+    return isinstance(c['requires_human_review'],bool)
+
+def get_existing(root):
+    found={}; sources={}
+    for folder in ('ollama_classifications','ollama_classifications_fast','ollama_classifications_smart'):
+        for path in sorted((root/folder/'results').glob('*.json')):
+            obj=load_json(path,{})
+            c=obj.get('classification') if isinstance(obj,dict) else None
+            if validate(c):
+                found[path.stem]=c
+                sources[path.stem]=folder
+    return found,sources
+
+def priority(entry):
+    category=str(entry.get('asset_category') or entry.get('asset_type') or '').lower()
+    score=0
+    if 'complete_slide' in category or 'full_slide' in category: score+=100
+    if 'logical_component' in category: score+=80
+    if 'native_group' in category: score+=45
+    # Prioritise content-bearing layouts, not individual decorative icons.
+    text=' '.join(str(entry.get(k,'') or '') for k in ('extracted_text','asset_name','description','visual_structure')).lower()
+    for word in ('matrix','framework','funnel','timeline','process','roadmap','pyramid','strategy','journey','operating model','chart'):
+        if word in text: score+=8
+    if 'icon' in text: score-=30
+    for key in ('native_shape_count','shape_count'):
+        try: score+=min(int(entry.get(key) or 0),30)
+        except (ValueError,TypeError): pass
+    return score
+
+def request_model(png, entry, args):
+    # Optional resizing for model throughput; uses Pillow only if installed.
+    img=png.read_bytes()
+    if args.resize:
+        try:
+            from PIL import Image
+            from io import BytesIO
+            with Image.open(BytesIO(img)) as im:
+                im.thumbnail((args.resize,args.resize))
+                buf=BytesIO(); im.convert('RGB').save(buf,format='PNG'); img=buf.getvalue()
+        except ImportError:
+            raise RuntimeError('Pillow required for --resize; install with: py -m pip install Pillow')
+    meta={k:entry.get(k) for k in ('asset_id','asset_type','asset_category','extracted_text','visual_structure',
+         'native_shape_count','picture_count','table_count','chart_reference_count','review_reasons') if k in entry}
+    prompt=('Classify this reusable management consulting PowerPoint visual asset. Use the image '
+            'and supporting metadata. Identify diagram type, visual structure, communication intent, '
+            'consulting use cases and retrieval keywords. Do not invent unseen facts. '
+            'Use confidence 0 to 1 and mark uncertainty for review. Return JSON only.\nMetadata:\n'+
+            json.dumps(meta,ensure_ascii=False)[:12000])
+    body={'model':args.model,'messages':[{'role':'user','content':prompt,
+          'images':[base64.b64encode(img).decode('ascii')]}], 'stream':False,
+          'think':False,'format':SCHEMA,'options':{'temperature':0,'num_ctx':8192,'num_predict':1600},
+          'keep_alive':'10m'}
+    req=urllib.request.Request('http://127.0.0.1:11434/api/chat',
+        data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req,timeout=args.timeout) as res: raw=json.load(res)
+    content=raw.get('message',{}).get('content','')
+    if not content.strip(): raise ValueError('Empty model response; done_reason='+str(raw.get('done_reason')))
+    c=json.loads(content)
+    if not validate(c): raise ValueError('Invalid or incomplete classification JSON')
+    c['confidence']=max(0,min(1,float(c['confidence'])))
+    return c
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--library",type=Path,default=Path("output/asset_library"))
-    ap.add_argument("--output-subfolder",default="ollama_classifications_fast")
-    ap.add_argument("--limit",type=int,default=10,help="0 = all available previews")
-    ap.add_argument("--host",default="http://127.0.0.1:11434")
-    ap.add_argument("--vision-model",default="qwen3-vl:8b")
-    ap.add_argument("--text-model",default="qwen3:14b")
-    ap.add_argument("--timeout",type=int,default=300)
-    ap.add_argument("--retry-failed",action="store_true")
-    ap.add_argument("--vision-only",action="store_true",
-                    help="Skip second model; faster pilot with less RAM pressure")
+    ap.add_argument('--library',type=Path,default=Path('output/asset_library'))
+    ap.add_argument('--plan',action='store_true',help='Only plan; default if --run is absent')
+    ap.add_argument('--run',type=int,default=0,help='Number of NEW assets to classify locally')
+    ap.add_argument('--model',default='qwen3-vl:8b')
+    ap.add_argument('--resize',type=int,default=1024,help='Max image side; 0 means original')
+    ap.add_argument('--timeout',type=int,default=900)
+    ap.add_argument('--retry-failed',action='store_true')
     args=ap.parse_args()
-    # Restrict host to loopback to prevent accidentally sending client data remotely.
-    if args.host.rstrip("/") not in ("http://127.0.0.1:11434","http://localhost:11434"):
-        ap.error("Only local Ollama on port 11434 is supported")
-    root=args.library.resolve()
-    source=root/"catalogue_enriched.json"
-    if not source.exists(): ap.error(f"Missing {source}")
-    entries=json.loads(source.read_text(encoding="utf-8")).get("assets",[])
-    if not isinstance(entries,list): ap.error("Expected 'assets' array")
-    out=root/args.output_subfolder
-    out.mkdir(exist_ok=True)
-    results_dir=out/"results"; results_dir.mkdir(exist_ok=True)
-    failed_path=out/"failures.json"
-    failures=json.loads(failed_path.read_text(encoding="utf-8")) if failed_path.exists() else {}
-    done=0; skipped=0; errors=0
+    root=args.library.resolve(); cat=load_json(root/'catalogue_enriched.json')
+    if not isinstance(cat,dict) or not isinstance(cat.get('assets'),list): ap.error('Missing catalogue_enriched.json with assets array')
+    entries=cat['assets']; out=root/'ollama_classifications_smart'; results=out/'results'
+    results.mkdir(parents=True,exist_ok=True)
+    existing,sources=get_existing(root)
+    failures=load_json(out/'failures.json',{}) or {}
+    hash_groups=defaultdict(list); png_by_id={}
     for entry in entries:
-        aid=str(entry.get("asset_id",""))
-        if not re.fullmatch(r"[A-Za-z0-9_-]+",aid): continue
-        png=root/"previews"/(aid+".png")
-        if not png.is_file(): continue
-        dest=results_dir/(aid+".json")
-        if dest.exists():
-            skipped+=1
-            continue
-        if aid in failures and not args.retry_failed:
-            skipped+=1
-            continue
-        if args.limit>0 and done+errors>=args.limit: break
-        print(f"[{done+errors+1}/{args.limit or 'all'}] {aid}",flush=True)
-        started=time.perf_counter()
+        aid=str(entry.get('asset_id',''))
+        if not re.fullmatch('[A-Za-z0-9_-]+',aid): continue
+        png=root/'previews'/(aid+'.png')
+        if png.is_file():
+            png_by_id[aid]=png
+            h=hashlib.sha256(png.read_bytes()).hexdigest()
+            hash_groups[h].append(aid)
+    # Reuse existing classification only for exact identical PNG bytes.
+    # Reused records are explicitly marked for metadata/context review.
+    propagated={}
+    for ids in hash_groups.values():
+        donor=next((i for i in ids if i in existing),None)
+        if donor:
+            for aid in ids:
+                if aid not in existing:
+                    c=dict(existing[donor]); c['requires_human_review']=True
+                    propagated[aid]=(c,donor)
+    unique=[]
+    for ids in hash_groups.values():
+        if any(i in existing or i in propagated for i in ids): continue
+        rep=max(ids,key=lambda i: priority(next(e for e in entries if e.get('asset_id')==i)))
+        unique.append(rep)
+    entry_by_id={e.get('asset_id'):e for e in entries}
+    unique.sort(key=lambda i:(-priority(entry_by_id[i]),i))
+    queue=[]
+    for aid in unique:
+        if aid in failures and not args.retry_failed: continue
+        queue.append(aid)
+    def save_outputs():
+        fresh,sources_now=get_existing(root)
+        combined={**fresh,**{aid:c for aid,(c,donor) in propagated.items() if aid not in fresh}}
+        # Rebuild exact-match propagation using newly classified representatives.
+        for ids in hash_groups.values():
+            donor=next((i for i in ids if i in fresh),None)
+            if donor:
+                for aid in ids:
+                    if aid not in combined:
+                        c=dict(fresh[donor]);c['requires_human_review']=True
+                        combined[aid]=c
+                        propagated[aid]=(c,donor)
+        enriched=[]; rows=[]
+        for entry in entries:
+            row=dict(entry); aid=entry.get('asset_id')
+            if aid in combined:
+                row['ollama_classification']=combined[aid]
+                row['ai_classified']=True
+                row['classification_origin']=('exact_png_reuse:'+propagated[aid][1]
+                     if aid in propagated and aid not in fresh else sources_now.get(aid,'local'))
+                row['visual_validated']=False
+                c=combined[aid]
+                rows.append({'asset_id':aid,'origin':row['classification_origin'],
+                             **{k:json.dumps(c[k],ensure_ascii=False) if isinstance(c[k],list) else c[k] for k in FIELDS}})
+            enriched.append(row)
+        write_json(out/'catalogue_ollama_enriched.json',{'schema_version':'0.6.1','assets':enriched})
+        with (out/'classifications.csv').open('w',newline='',encoding='utf-8-sig') as f:
+            w=csv.DictWriter(f,fieldnames=['asset_id','origin']+FIELDS);w.writeheader();w.writerows(rows)
+        with (out/'review_queue.csv').open('w',newline='',encoding='utf-8-sig') as f:
+            w=csv.DictWriter(f,fieldnames=['asset_id','reason','confidence']);w.writeheader()
+            for row in rows:
+                reason=[]
+                if row['origin'].startswith('exact_png_reuse:'): reason.append('exact_png_reuse_check_context')
+                if row['requires_human_review']: reason.append('model_requests_review')
+                if float(row['confidence'])<0.75: reason.append('low_confidence')
+                if reason:w.writerow({'asset_id':row['asset_id'],'reason':';'.join(reason),'confidence':row['confidence']})
+        return len(rows)
+    with (out/'priority_queue.csv').open('w',newline='',encoding='utf-8-sig') as f:
+        w=csv.DictWriter(f,fieldnames=['asset_id','priority','category','preview']);w.writeheader()
+        for aid in queue:
+            e=entry_by_id[aid];w.writerow({'asset_id':aid,'priority':priority(e),
+                    'category':e.get('asset_category') or e.get('asset_type',''),'preview':str(png_by_id[aid])})
+    total=save_outputs()
+    print(f'Assets: {len(entries)} | previews: {len(png_by_id)} | exact image groups: {len(hash_groups)}')
+    print(f'Existing or reused classifications: {total} | queued unique images: {len(queue)}')
+    print('Queue:',out/'priority_queue.csv')
+    if args.run<=0:
+        print('Planning complete. No model calls. Use --run 3 to classify three priority assets.')
+        return
+    successes=0; errors=0
+    for aid in queue[:args.run]:
+        start=time.monotonic();print('Classifying',aid,flush=True)
         try:
-            # Resize only the image sent to Ollama; original preview stays unchanged.
-            from PIL import Image
-            from io import BytesIO
-            with Image.open(png) as im:
-                im = im.convert("RGB")
-                im.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-                buf = BytesIO()
-                im.save(buf, format="JPEG", quality=85, optimize=True)
-            image=base64.b64encode(buf.getvalue()).decode("ascii")
-            context=json.dumps(metadata(entry),ensure_ascii=False)
-            vision_prompt=(
-                "You are a management consulting presentation design analyst. "
-                "Inspect the attached PowerPoint asset preview visually, and use the "
-                "structural metadata as supporting context. Identify the diagram type, "
-                "layout, intended communication, consulting applications, and keywords. "
-                "Do not infer confidential client facts not visible in the asset. "
-                "Be precise; mark uncertain classifications for human review. "
-                "Return only JSON matching the required schema. "
-                "Confidence must be between 0 and 1. "
-                "Asset metadata:\n"+context[:14000])
-            vision=ollama(args.host,args.vision_model,[{"role":"user","content":vision_prompt,
-                        "images":[image]}],args.timeout)
-            if args.vision_only:
-                final=vision
-            else:
-                refine_prompt=(
-                    "Refine the classification of this editable consulting PowerPoint "
-                    "asset. The vision result describes the image; the metadata provides "
-                    "actual extracted slide text and object counts. Resolve inconsistencies "
-                    "conservatively; do not claim to have viewed the image yourself. "
-                    "Return only the specified JSON. Asset metadata:\n"+
-                    context[:14000]+"\nVision analysis:\n"+
-                    json.dumps(vision,ensure_ascii=False))
-                final=ollama(args.host,args.text_model,
-                             [{"role":"user","content":refine_prompt}],args.timeout)
-            result={"asset_id":aid,"model_vision":args.vision_model,
-                    "model_semantic":None if args.vision_only else args.text_model,
-                    "classification":final,"vision_draft":vision}
-            atomic_json(dest,result)
-            failures.pop(aid,None); atomic_json(failed_path,failures)
-            done+=1
-            print(f"  OK: {final['visual_structure']} | confidence={final['confidence']:.2f} | {time.perf_counter()-started:.1f}s",flush=True)
-        except (OSError,ValueError,RuntimeError,TimeoutError,urllib.error.URLError) as exc:
-            errors+=1
-            failures[aid]={"error":str(exc),"time":time.strftime("%Y-%m-%d %H:%M:%S")}
-            atomic_json(failed_path,failures)
-            print(f"  ERROR: {exc}",file=sys.stderr,flush=True)
-    merged=[]
-    for entry in entries:
-        row=dict(entry)
-        f=results_dir/(str(entry.get("asset_id",""))+".json")
-        if f.exists():
-            try:
-                classification=json.loads(f.read_text(encoding="utf-8"))["classification"]
-                row["ollama_classification"]=classification
-                row["ai_classified"]=True
-                # AI does not certify PowerPoint editability or publication readiness.
-                row["visual_validated"]=False
-            except (OSError,ValueError,KeyError): pass
-        merged.append(row)
-    atomic_json(out/"catalogue_ollama_enriched.json",
-                {"schema_version":"0.6.0","method":"local_ollama",
-                 "assets":merged})
-    rows=[]
-    for entry in merged:
-        c=entry.get("ollama_classification")
-        if not c: continue
-        rows.append({"asset_id":entry["asset_id"],**{
-            k:json.dumps(c[k],ensure_ascii=False) if isinstance(c[k],list) else c[k]
-            for k in FIELDS}})
-    with (out/"classifications.csv").open("w",encoding="utf-8-sig",newline="") as fh:
-        writer=csv.DictWriter(fh,fieldnames=["asset_id"]+FIELDS)
-        writer.writeheader(); writer.writerows(rows)
-    print(f"\nNew: {done}; errors: {errors}; skipped: {skipped}; total classified: {len(rows)}")
-    print(f"Results: {out}")
-if __name__=="__main__": main()
+            c=request_model(png_by_id[aid],entry_by_id[aid],args)
+            write_json(results/(aid+'.json'),{'asset_id':aid,'classification':c,'model_vision':args.model,
+                      'duration_seconds':round(time.monotonic()-start,1)})
+            failures.pop(aid,None); successes+=1
+            print(f'  OK {c["visual_structure"][:90]} | {time.monotonic()-start:.1f}s',flush=True)
+        except Exception as e:
+            errors+=1;failures[aid]={'error':str(e),'timestamp':time.strftime('%Y-%m-%d %H:%M:%S')}
+            print('  ERROR',str(e)[:300],flush=True)
+        write_json(out/'failures.json',failures)
+        save_outputs()
+    print(f'Done: {successes} successful, {errors} failed. Results: {out}')
+
+if __name__=='__main__':main()
