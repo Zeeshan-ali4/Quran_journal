@@ -1,3 +1,183 @@
-Measure-Command {
-    py ./src/classify_assets_ollama.py --limit 3 --vision-only
-} | Select-Object TotalMinutes, TotalSeconds
+#!/usr/bin/env python3
+"""CSIL Phase 1.6: fully local Ollama visual + semantic classification.
+Standard library only. Never modifies source assets or the original catalogue.
+"""
+import argparse, base64, csv, json, os, re, sys, time, urllib.request, urllib.error
+from pathlib import Path
+
+SCHEMA = {
+ "type":"object","properties":{
+  "asset_name":{"type":"string"},"asset_type":{"type":"string"},
+  "description":{"type":"string"},"visual_structure":{"type":"string"},
+  "communication_intent":{"type":"string"},"consulting_framework":{"type":"string"},
+  "consulting_use_cases":{"type":"array","items":{"type":"string"}},
+  "search_keywords":{"type":"array","items":{"type":"string"}},
+  "confidence":{"type":"number"},"requires_human_review":{"type":"boolean"}
+ },"required":["asset_name","asset_type","description","visual_structure",
+ "communication_intent","consulting_framework","consulting_use_cases",
+ "search_keywords","confidence","requires_human_review"],
+ "additionalProperties":False}
+FIELDS=list(SCHEMA["properties"])
+
+def atomic_json(path, value):
+    tmp=path.with_suffix(path.suffix+".tmp")
+    tmp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding="utf-8")
+    os.replace(tmp,path)
+
+def ollama(host, model, messages, timeout, temperature=0):
+    data=json.dumps({"model":model,"messages":messages,"stream":False,
+                     "format":SCHEMA,"options":{"temperature":temperature,"num_ctx":4096,"num_predict":420},
+                     "keep_alive":"10m"}).encode("utf-8")
+    request=urllib.request.Request(host.rstrip("/")+"/api/chat",data=data,
+                                   headers={"Content-Type":"application/json"})
+    try:
+        with urllib.request.urlopen(request,timeout=timeout) as response:
+            raw=json.load(response)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Ollama HTTP {e.code}: {e.read(1200).decode('utf-8','replace')}") from e
+    content=raw.get("message",{}).get("content","")
+    if not content: raise ValueError("Empty model response")
+    try: obj=json.loads(content)
+    except json.JSONDecodeError:
+        match=re.search(r"\{.*\}",content,re.S)
+        if not match: raise ValueError("Response was not JSON: "+content[:250])
+        obj=json.loads(match.group())
+    if not isinstance(obj,dict): raise ValueError("Expected JSON object")
+    for field in FIELDS:
+        if field not in obj: raise ValueError("Missing JSON field: "+field)
+    for field in ("consulting_use_cases","search_keywords"):
+        if not isinstance(obj[field],list) or not all(isinstance(x,str) for x in obj[field]):
+            raise ValueError(f"{field} must be a list of strings")
+    if not isinstance(obj["confidence"],(int,float)) or isinstance(obj["confidence"],bool):
+        raise ValueError("confidence must be a number")
+    obj["confidence"]=max(0.0,min(1.0,float(obj["confidence"])))
+    if not isinstance(obj["requires_human_review"],bool):
+        raise ValueError("requires_human_review must be boolean")
+    return obj
+
+def metadata(entry):
+    keys=["asset_id","asset_type","asset_category","source_deck","source_slide",
+          "extracted_text","native_shape_count","native_group_count","picture_count",
+          "chart_reference_count","table_count","communication_intent",
+          "consulting_use_case","visual_structure","review_reasons"]
+    return {k:entry[k] for k in keys if k in entry}
+
+def main():
+    ap=argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--library",type=Path,default=Path("output/asset_library"))
+    ap.add_argument("--output-subfolder",default="ollama_classifications_fast")
+    ap.add_argument("--limit",type=int,default=10,help="0 = all available previews")
+    ap.add_argument("--host",default="http://127.0.0.1:11434")
+    ap.add_argument("--vision-model",default="qwen3-vl:8b")
+    ap.add_argument("--text-model",default="qwen3:14b")
+    ap.add_argument("--timeout",type=int,default=300)
+    ap.add_argument("--retry-failed",action="store_true")
+    ap.add_argument("--vision-only",action="store_true",
+                    help="Skip second model; faster pilot with less RAM pressure")
+    args=ap.parse_args()
+    # Restrict host to loopback to prevent accidentally sending client data remotely.
+    if args.host.rstrip("/") not in ("http://127.0.0.1:11434","http://localhost:11434"):
+        ap.error("Only local Ollama on port 11434 is supported")
+    root=args.library.resolve()
+    source=root/"catalogue_enriched.json"
+    if not source.exists(): ap.error(f"Missing {source}")
+    entries=json.loads(source.read_text(encoding="utf-8")).get("assets",[])
+    if not isinstance(entries,list): ap.error("Expected 'assets' array")
+    out=root/args.output_subfolder
+    out.mkdir(exist_ok=True)
+    results_dir=out/"results"; results_dir.mkdir(exist_ok=True)
+    failed_path=out/"failures.json"
+    failures=json.loads(failed_path.read_text(encoding="utf-8")) if failed_path.exists() else {}
+    done=0; skipped=0; errors=0
+    for entry in entries:
+        aid=str(entry.get("asset_id",""))
+        if not re.fullmatch(r"[A-Za-z0-9_-]+",aid): continue
+        png=root/"previews"/(aid+".png")
+        if not png.is_file(): continue
+        dest=results_dir/(aid+".json")
+        if dest.exists():
+            skipped+=1
+            continue
+        if aid in failures and not args.retry_failed:
+            skipped+=1
+            continue
+        if args.limit>0 and done+errors>=args.limit: break
+        print(f"[{done+errors+1}/{args.limit or 'all'}] {aid}",flush=True)
+        started=time.perf_counter()
+        try:
+            # Resize only the image sent to Ollama; original preview stays unchanged.
+            from PIL import Image
+            from io import BytesIO
+            with Image.open(png) as im:
+                im = im.convert("RGB")
+                im.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                buf = BytesIO()
+                im.save(buf, format="JPEG", quality=85, optimize=True)
+            image=base64.b64encode(buf.getvalue()).decode("ascii")
+            context=json.dumps(metadata(entry),ensure_ascii=False)
+            vision_prompt=(
+                "You are a management consulting presentation design analyst. "
+                "Inspect the attached PowerPoint asset preview visually, and use the "
+                "structural metadata as supporting context. Identify the diagram type, "
+                "layout, intended communication, consulting applications, and keywords. "
+                "Do not infer confidential client facts not visible in the asset. "
+                "Be precise; mark uncertain classifications for human review. "
+                "Return only JSON matching the required schema. "
+                "Confidence must be between 0 and 1. "
+                "Asset metadata:\n"+context[:14000])
+            vision=ollama(args.host,args.vision_model,[{"role":"user","content":vision_prompt,
+                        "images":[image]}],args.timeout)
+            if args.vision_only:
+                final=vision
+            else:
+                refine_prompt=(
+                    "Refine the classification of this editable consulting PowerPoint "
+                    "asset. The vision result describes the image; the metadata provides "
+                    "actual extracted slide text and object counts. Resolve inconsistencies "
+                    "conservatively; do not claim to have viewed the image yourself. "
+                    "Return only the specified JSON. Asset metadata:\n"+
+                    context[:14000]+"\nVision analysis:\n"+
+                    json.dumps(vision,ensure_ascii=False))
+                final=ollama(args.host,args.text_model,
+                             [{"role":"user","content":refine_prompt}],args.timeout)
+            result={"asset_id":aid,"model_vision":args.vision_model,
+                    "model_semantic":None if args.vision_only else args.text_model,
+                    "classification":final,"vision_draft":vision}
+            atomic_json(dest,result)
+            failures.pop(aid,None); atomic_json(failed_path,failures)
+            done+=1
+            print(f"  OK: {final['visual_structure']} | confidence={final['confidence']:.2f} | {time.perf_counter()-started:.1f}s",flush=True)
+        except (OSError,ValueError,RuntimeError,TimeoutError,urllib.error.URLError) as exc:
+            errors+=1
+            failures[aid]={"error":str(exc),"time":time.strftime("%Y-%m-%d %H:%M:%S")}
+            atomic_json(failed_path,failures)
+            print(f"  ERROR: {exc}",file=sys.stderr,flush=True)
+    merged=[]
+    for entry in entries:
+        row=dict(entry)
+        f=results_dir/(str(entry.get("asset_id",""))+".json")
+        if f.exists():
+            try:
+                classification=json.loads(f.read_text(encoding="utf-8"))["classification"]
+                row["ollama_classification"]=classification
+                row["ai_classified"]=True
+                # AI does not certify PowerPoint editability or publication readiness.
+                row["visual_validated"]=False
+            except (OSError,ValueError,KeyError): pass
+        merged.append(row)
+    atomic_json(out/"catalogue_ollama_enriched.json",
+                {"schema_version":"0.6.0","method":"local_ollama",
+                 "assets":merged})
+    rows=[]
+    for entry in merged:
+        c=entry.get("ollama_classification")
+        if not c: continue
+        rows.append({"asset_id":entry["asset_id"],**{
+            k:json.dumps(c[k],ensure_ascii=False) if isinstance(c[k],list) else c[k]
+            for k in FIELDS}})
+    with (out/"classifications.csv").open("w",encoding="utf-8-sig",newline="") as fh:
+        writer=csv.DictWriter(fh,fieldnames=["asset_id"]+FIELDS)
+        writer.writeheader(); writer.writerows(rows)
+    print(f"\nNew: {done}; errors: {errors}; skipped: {skipped}; total classified: {len(rows)}")
+    print(f"Results: {out}")
+if __name__=="__main__": main()
