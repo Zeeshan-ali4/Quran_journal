@@ -1,131 +1,154 @@
 #!/usr/bin/env python3
-"""CSIL Phase 2: offline searchable preview gallery + relevance evaluation.
-Reads existing smart classifier catalogue; writes a self-contained HTML index.
-No external packages, AI calls, network services, or changes to source assets.
+"""CSIL Phase 2B: local Ollama embeddings and localhost semantic search gallery.
+No third-party Python packages. Source catalogue/assets never modified.
+Usage: py src/csil_semantic_search.py --build; py src/csil_semantic_search.py --serve
 """
-import argparse, json, html, re
+import argparse, hashlib, html, json, math, re, sys, urllib.request, urllib.error, webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
-SYNONYMS = {
- 'roadmap':['timeline','milestone','implementation','phases','plan'],
- 'timeline':['roadmap','milestone','sequence','phases'],
- 'funnel':['conversion','pipeline','stages','filter'],
- 'matrix':['grid','quadrant','2x2','framework'],
- 'journey':['customer','experience','touchpoint','process'],
- 'process':['workflow','steps','flow','journey'],
- 'strategy':['strategic','framework','priorities','transformation'],
- 'operating':['operations','organisation','organization','model'],
- 'pyramid':['hierarchy','layers','levels'],
- 'comparison':['compare','versus','table','matrix'],
- 'organisation':['organization','org','structure','hierarchy'],
- 'transformation':['change','roadmap','implementation','strategy'],
- 'kpi':['metric','performance','dashboard','indicator'],
-}
-
+MODEL='embeddinggemma'
 def clean(v):
-    if v is None: return ''
-    if isinstance(v,list): return ' '.join(clean(x) for x in v)
-    if isinstance(v,dict): return ' '.join(clean(x) for x in v.values())
+    if v is None:return ''
+    if isinstance(v,(dict,list)):return ' '.join(clean(x) for x in (v.values() if isinstance(v,dict) else v))
     return str(v)
+def embed(text, model, timeout):
+    data=json.dumps({'model':model,'input':text,'truncate':True,'keep_alive':'10m'}).encode()
+    req=urllib.request.Request('http://127.0.0.1:11434/api/embed',data=data,headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req,timeout=timeout) as resp:result=json.load(resp)
+    vec=result.get('embeddings',[None])[0]
+    if not isinstance(vec,list) or not vec:raise RuntimeError('No embedding returned by Ollama')
+    norm=math.sqrt(sum(x*x for x in vec))
+    if not norm:raise RuntimeError('Zero-length embedding')
+    return [round(x/norm,7) for x in vec]
+def cosine(a,b):return sum(x*y for x,y in zip(a,b)) if len(a)==len(b) else -1
+
+def collect(root):
+    src=root/'ollama_classifications_smart'/'catalogue_ollama_enriched.json'
+    if not src.exists():raise FileNotFoundError(f'Missing {src}. Run smart classifier --plan first.')
+    obj=json.loads(src.read_text(encoding='utf-8-sig'))
+    items=[]
+    for a in obj['assets']:
+        c=a.get('ollama_classification')
+        if not isinstance(c,dict):continue
+        aid=str(a.get('asset_id',''))
+        if not re.fullmatch('[A-Za-z0-9_-]+',aid):continue
+        if not (root/'previews'/f'{aid}.png').exists():continue
+        item={'id':aid,'name':clean(c.get('asset_name')) or aid,
+              'category':clean(a.get('asset_category') or a.get('asset_type')),
+              'description':clean(c.get('description')),
+              'visual':clean(c.get('visual_structure')),
+              'intent':clean(c.get('communication_intent')),
+              'framework':clean(c.get('consulting_framework')),
+              'uses':clean(c.get('consulting_use_cases')),
+              'keywords':clean(c.get('search_keywords')),
+              'slide_text':clean(a.get('extracted_text'))[:1800],
+              'pptx':(root/'assets'/f'{aid}.pptx').exists(),
+              'confidence':c.get('confidence',None)}
+        item['text']='\n'.join(f'{k}: {item[k]}' for k in ('name','category','description','visual','intent','framework','uses','keywords','slide_text') if item[k])[:5500]
+        items.append(item)
+    return items
+
+def build(root,model,timeout):
+    items=collect(root)
+    dest=root/'semantic_search';dest.mkdir(exist_ok=True)
+    cache_path=dest/'embedding_cache.json'
+    cache=json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.exists() else {}
+    # Model key prevents accidental mixing of different embedding spaces.
+    cache={k:v for k,v in cache.items() if isinstance(v,dict) and v.get('model')==model}
+    failures=[];indexed=[];new=0
+    for n,item in enumerate(items,1):
+        key=item['id'];digest=hashlib.sha256(item['text'].encode()).hexdigest()
+        prior=cache.get(key)
+        if not prior or prior.get('digest')!=digest:
+            try:
+                vector=embed(item['text'],model,timeout)
+                cache[key]={'model':model,'digest':digest,'vector':vector}
+                new+=1
+                if new%10==0:
+                    cache_path.write_text(json.dumps(cache),encoding='utf-8')
+                    print(f'Embedded {new} new assets ({n}/{len(items)})',flush=True)
+            except Exception as e:
+                failures.append((key,str(e)))
+                print(f'ERROR {key}: {e}',file=sys.stderr)
+                continue
+        indexed.append({k:v for k,v in item.items() if k!='text'}|{'vector':cache[key]['vector']})
+    cache_path.write_text(json.dumps(cache),encoding='utf-8')
+    (dest/'index.json').write_text(json.dumps({'model':model,'items':indexed},ensure_ascii=False),encoding='utf-8')
+    print(f'Indexed {len(indexed)} assets; new embeddings: {new}; failures: {len(failures)}')
+    print(f'Index: {dest / "index.json"}')
+    if failures:print('Failed IDs:',', '.join(x[0] for x in failures[:20]))
+
+PAGE='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CSIL Semantic Search</title><style>
+*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;background:#f4f6fa;color:#1b2838;margin:0}header{background:#14243a;color:white;padding:22px 5%}header h1{margin:0 0 6px;font-size:24px}header p{margin:0;color:#c9d6e6}main{max-width:1250px;margin:auto;padding:24px}.bar{display:flex;gap:10px;flex-wrap:wrap}input,select,button{font:inherit;padding:11px;border:1px solid #c9d3df;border-radius:8px}input{flex:1;min-width:260px}button{background:#195a9d;color:white;cursor:pointer}button:disabled{opacity:.5}.meta{color:#657486;font-size:13px;margin:14px 0}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:15px}.card{background:white;border:1px solid #e0e5ec;border-radius:12px;overflow:hidden}.card img{width:100%;aspect-ratio:16/9;object-fit:contain;background:#e9edf3}.body{padding:14px}.body h3{font-size:16px;margin:0 0 8px}.body p{font-size:13px;line-height:1.5}.tag{font-size:12px;color:#4c6178}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}.links a{color:#175d9f;font-size:13px}.rating{display:flex;gap:8px;margin-top:12px}.rating button{background:white;color:#1b4c7d;padding:6px 9px;font-size:12px}.rating button.active{background:#d9ebfc}.mode{display:flex;align-items:center;gap:5px}.mode input{min-width:0}#status{min-height:20px}
+</style></head><body><header><h1>CSIL — Semantic Asset Search</h1><p>Local Ollama embeddings · Editable PowerPoint assets · Retrieval evaluation</p></header><main><div class="bar"><input id="q" placeholder="Describe the slide you need, e.g. moving from current to future operating model"><select id="mode"><option value="semantic">Semantic similarity</option><option value="keyword">Keyword baseline</option></select><button id="go">Search</button><button id="export">Export ratings CSV</button></div><div id="status" class="meta">Enter a consulting request to search your indexed assets.</div><div class="cards" id="results"></div></main><script>
+const $=id=>document.getElementById(id);let ratings=[];let current='';
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function search(){const q=$('q').value.trim();if(!q)return;current=q;$('go').disabled=true;$('status').textContent='Searching local index…';try{const r=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q,mode:$('mode').value,limit:30})});const d=await r.json();if(!r.ok)throw Error(d.error||'Search failed');$('status').textContent=`${d.total} indexed assets · ${d.results.length} displayed · ${d.mode} ranking · model ${d.model}`;$('results').innerHTML=d.results.map((x,i)=>`<article class="card"><img loading="lazy" src="/preview/${encodeURIComponent(x.id)}" alt="Asset preview"><div class="body"><h3>${i+1}. ${esc(x.name)}</h3><div class="tag">${esc(x.category)} · Score ${Number(x.score).toFixed(3)} · ${esc(x.id)}</div><p>${esc(x.description)}</p><p class="tag">${esc(x.visual)} · ${esc(x.framework)}</p><div class="links"><a href="/preview/${encodeURIComponent(x.id)}" target="_blank">View preview</a>${x.pptx?`<a href="/pptx/${encodeURIComponent(x.id)}">Open editable PPTX</a>`:''}</div><div class="rating"><button data-id="${esc(x.id)}" data-rating="relevant">Relevant</button><button data-id="${esc(x.id)}" data-rating="not_relevant">Not relevant</button></div></div></article>`).join('')||'No results';document.querySelectorAll('.rating button').forEach(b=>b.onclick=()=>{ratings.push({query:current,mode:$('mode').value,asset_id:b.dataset.id,rating:b.dataset.rating});b.classList.add('active')});}catch(e){$('status').textContent='Error: '+e.message;}finally{$('go').disabled=false;}}
+$('go').onclick=search;$('q').onkeydown=e=>{if(e.key==='Enter')search()};$('export').onclick=()=>{if(!ratings.length){alert('Rate some results first');return}const cols=['query','mode','asset_id','rating'];const csv=[cols.join(','),...ratings.map(r=>cols.map(k=>'"'+String(r[k]).replace(/"/g,'""')+'"').join(','))].join('\r\n');const u=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const a=document.createElement('a');a.href=u;a.download='csil_semantic_evaluation.csv';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};
+</script></body></html>'''
+
+def serve(root,port,timeout):
+    idx=root/'semantic_search'/'index.json'
+    if not idx.exists():raise FileNotFoundError(f'Missing {idx}. Run --build first.')
+    data=json.loads(idx.read_text(encoding='utf-8'))
+    model=data['model'];items=data['items'];by_id={x['id']:x for x in items}
+    class Handler(BaseHTTPRequestHandler):
+        def send(self,body,typ='application/json',status=200,extra=None):
+            if isinstance(body,str):body=body.encode('utf-8')
+            self.send_response(status);self.send_header('Content-Type',typ);self.send_header('Content-Length',str(len(body)))
+            self.send_header('X-Content-Type-Options','nosniff')
+            if extra:self.send_header(*extra)
+            self.end_headers();self.wfile.write(body)
+        def do_GET(self):
+            path=urlparse(self.path).path
+            if path=='/':return self.send(PAGE,'text/html; charset=utf-8')
+            m=re.fullmatch(r'/(preview|pptx)/([A-Za-z0-9_-]+)',unquote(path))
+            if not m or m.group(2) not in by_id:return self.send('Not found','text/plain',404)
+            kind,aid=m.groups();p=root/('previews' if kind=='preview' else 'assets')/(aid+('.png' if kind=='preview' else '.pptx'))
+            if not p.is_file():return self.send('Not found','text/plain',404)
+            return self.send(p.read_bytes(),'image/png' if kind=='preview' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation',extra=('Content-Disposition',f'inline; filename="{aid}.pptx"') if kind=='pptx' else None)
+        def do_POST(self):
+            if self.path!='/api/search':return self.send('{}',status=404)
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if length>20000:raise ValueError('Request too large')
+                req=json.loads(self.rfile.read(length));q=str(req.get('query','')).strip()[:1000]
+                if not q:raise ValueError('Empty query')
+                mode=req.get('mode','semantic');limit=min(50,max(1,int(req.get('limit',30))))
+                if mode=='semantic':
+                    v=embed(q,model,timeout)
+                    scored=[(cosine(v,x['vector']),x) for x in items]
+                elif mode=='keyword':
+                    words=set(re.findall(r'[a-z0-9]+',q.lower()))
+                    scored=[]
+                    for x in items:
+                        fields=' '.join(clean(x.get(k,'')) for k in ('name','description','visual','intent','framework','uses','keywords','slide_text')).lower()
+                        tokens=set(re.findall(r'[a-z0-9]+',fields))
+                        score=len(words&tokens)/max(len(words),1)+ (0.2 if q.lower() in fields else 0)
+                        scored.append((score,x))
+                else:raise ValueError('Unknown search mode')
+                scored.sort(key=lambda t:t[0],reverse=True)
+                results=[{k:v for k,v in x.items() if k!='vector'}|{'score':round(s,4)} for s,x in scored[:limit]]
+                self.send(json.dumps({'model':model,'mode':mode,'total':len(items),'results':results},ensure_ascii=False))
+            except Exception as e:self.send(json.dumps({'error':str(e)}),status=400)
+    server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
+    print(f'Local search gallery: http://127.0.0.1:{port}/  (Ctrl+C to stop)')
+    try:server.serve_forever()
+    except KeyboardInterrupt:pass
+    finally:server.server_close()
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
+    group=ap.add_mutually_exclusive_group(required=True)
+    group.add_argument('--build',action='store_true',help='Generate/reuse local embeddings')
+    group.add_argument('--serve',action='store_true',help='Run local browser search')
     ap.add_argument('--library',type=Path,default=Path('output/asset_library'))
-    args=ap.parse_args()
-    root=args.library.resolve()
-    src=root/'ollama_classifications_smart'/'catalogue_ollama_enriched.json'
-    if not src.exists(): ap.error(f'Missing {src}. Run: py ./src/csil_smart_classifier.py --plan')
-    data=json.loads(src.read_text(encoding='utf-8-sig'))
-    if not isinstance(data,dict) or not isinstance(data.get('assets'),list): ap.error('Expected assets list')
-    dest=root/'search_pilot'; dest.mkdir(parents=True,exist_ok=True)
-    items=[]; missing=0
-    for a in data['assets']:
-        c=a.get('ollama_classification')
-        if not isinstance(c,dict): continue
-        aid=str(a.get('asset_id',''))
-        if not re.fullmatch(r'[A-Za-z0-9_-]+',aid): continue
-        png=root/'previews'/(aid+'.png')
-        ppt=root/'assets'/(aid+'.pptx')
-        if not png.is_file(): missing+=1; continue
-        def val(key): return clean(c.get(key,''))
-        origin=clean(a.get('classification_origin',''))
-        item={
-            'id':aid,'name':val('asset_name') or aid,'type':val('asset_type'),
-            'category':clean(a.get('asset_category') or a.get('asset_type')),
-            'description':val('description'),'visual':val('visual_structure'),
-            'intent':val('communication_intent'),'framework':val('consulting_framework'),
-            'uses':clean(c.get('consulting_use_cases')),'keywords':clean(c.get('search_keywords')),
-            'slide_text':clean(a.get('extracted_text'))[:2500],
-            'confidence':c.get('confidence',0),'review':bool(c.get('requires_human_review')),
-            'origin':origin,'deck':clean(a.get('source_deck')),'slide':clean(a.get('source_slide')),
-            'preview':'../previews/'+aid+'.png',
-            'pptx':'../assets/'+aid+'.pptx' if ppt.is_file() else '',
-        }
-        items.append(item)
-    items.sort(key=lambda x:x['id'])
-    # JSON is embedded as a JS literal, not fetched: file:// works offline.
-    payload=json.dumps(items,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
-    syn=json.dumps(SYNONYMS,ensure_ascii=False)
-    page=r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CSIL — Search Pilot</title><style>
-:root{font-family:Segoe UI,Arial,sans-serif;color:#1c2633;background:#f5f7fa}*{box-sizing:border-box}body{margin:0}
-header{background:#14243a;color:white;padding:22px max(24px,calc((100vw - 1300px)/2))}header h1{margin:0 0 6px;font-size:24px}header p{margin:0;color:#d0dae6;font-size:14px}
-main{max-width:1300px;margin:auto;padding:24px}.tools{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;align-items:center}
-input,select,button{font:inherit;padding:10px 12px;border:1px solid #ccd4df;border-radius:8px;background:white}
-input{min-width:260px;flex:1}button{cursor:pointer}button:hover{background:#e8eef5}.muted{color:#657386;font-size:13px}
-.stats{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:15px}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
-.card{background:white;border:1px solid #e0e6ee;border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
-.thumb{width:100%;aspect-ratio:16/9;object-fit:contain;background:#eef2f7;border-bottom:1px solid #e0e6ee}
-.content{padding:15px;display:flex;flex-direction:column;gap:9px;flex:1}.name{font-weight:700;font-size:16px;line-height:1.35}
-.desc{font-size:13px;line-height:1.45}.tag{display:inline-block;border-radius:5px;background:#eef2f7;padding:4px 7px;font-size:11px;color:#42536a}
-.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}.actions a{padding:7px 9px;border:1px solid #cbd5e1;border-radius:6px;text-decoration:none;color:#13529b;font-size:12px}
-.eval{border-top:1px solid #e7ebf0;padding-top:8px;display:flex;align-items:center;gap:7px}.eval button{padding:5px 8px;font-size:12px}
-.active{background:#d5e9ff!important;border-color:#337bc1!important}.note{font-size:12px;color:#59677b}
-</style></head><body><header><h1>CSIL — Consulting Asset Search Pilot</h1><p>Local-only preview gallery · AI-classified assets · Search and relevance testing</p></header>
-<main><div class="tools"><input id="q" type="search" placeholder="Try: five stage roadmap, operating model, customer journey…" autofocus>
-<select id="category"><option value="">All categories</option></select>
-<label><input id="onlypptx" type="checkbox" checked style="min-width:0"> Editable PPTX only</label>
-<select id="sort"><option value="relevance">Sort: Relevance</option><option value="confidence">Sort: Confidence</option></select>
-<button id="export">Export evaluation CSV</button></div>
-<div class="stats"><span id="count"></span><span class="muted">Rate results as Relevant / Not relevant; export your test ratings.</span></div>
-<div class="cards" id="cards"></div></main>
-<script>
-const ITEMS=__DATA__;const SYN=__SYN__;
-const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const tokens=s=>(String(s||'').toLowerCase().match(/[a-z0-9]+/g)||[]).filter(w=>w.length>1);
-const cats=[...new Set(ITEMS.map(x=>x.category).filter(Boolean))].sort();cats.forEach(x=>{let o=document.createElement('option');o.value=x;o.textContent=x;$('category').appendChild(o)});
-const ratings=[];
-function score(x,q){let words=tokens(q);if(!words.length)return 0;
- const fields=[[x.name,6],[x.visual,5],[x.framework,5],[x.intent,4],[x.uses,4],[x.keywords,4],[x.description,2],[x.type,2],[x.category,2],[x.slide_text,1]];
- let sum=0;const qlower=q.toLowerCase().trim();for(let [field,w] of fields){let text=String(field||'').toLowerCase();if(!text)continue;
- if(qlower.length>3&&text.includes(qlower))sum+=w*4;
- let ts=new Set(tokens(text));for(let word of words){if(ts.has(word))sum+=w;else if(word.length>4&&[...ts].some(t=>t.startsWith(word)||word.startsWith(t)&&t.length>3))sum+=w*.55;
- for(let alias of (SYN[word]||[]))if(text.includes(alias))sum+=w*.35;}}
- return sum;
-}
-function render(){let q=$('q').value.trim(),cat=$('category').value,only=$('onlypptx').checked;
- let list=ITEMS.filter(x=>(!cat||x.category===cat)&&(!only||x.pptx)).map(x=>({...x,rank:score(x,q)}));
- if(q)list=list.filter(x=>x.rank>0);
- if($('sort').value==='confidence')list.sort((a,b)=>(Number(b.confidence)||0)-(Number(a.confidence)||0));
- else list.sort((a,b)=>b.rank-a.rank||(Number(b.confidence)||0)-(Number(a.confidence)||0));
- $('count').textContent=`${list.length} results from ${ITEMS.length} AI-classified assets`;
- $('cards').innerHTML=list.slice(0,60).map((x,i)=>`<article class="card"><img class="thumb" src="${esc(x.preview)}" alt="Preview of ${esc(x.name)}" loading="lazy">
- <div class="content"><div class="name">${esc(x.name)}</div><div><span class="tag">${esc(x.category||x.type)}</span> <span class="tag">Confidence: ${esc(x.confidence)}</span>${x.review?' <span class="tag">Review needed</span>':''}</div>
- <div class="desc">${esc(x.description)}</div><div class="note"><b>Visual:</b> ${esc(x.visual)}</div><div class="note"><b>Use cases:</b> ${esc(x.uses)}</div>
- <div class="note">${esc(x.id)} · ${esc(x.deck)}${x.slide?' · Slide '+esc(x.slide):''}</div>
- <div class="actions"><a href="${esc(x.preview)}" target="_blank">View preview</a>${x.pptx?`<a href="${esc(x.pptx)}">Open editable PPTX</a>`:'<span class="note">PPTX unavailable</span>'}</div>
- <div class="eval"><span class="note">Relevance:</span><button data-id="${esc(x.id)}" data-r="relevant">Relevant</button><button data-id="${esc(x.id)}" data-r="not_relevant">Not relevant</button></div></div></article>`).join('')||'<p>No matching classified assets. Try fewer or different keywords.</p>';
- document.querySelectorAll('.eval button').forEach(b=>b.addEventListener('click',()=>{let id=b.dataset.id,r=b.dataset.r,query=$('q').value.trim();ratings.push({query,asset_id:id,rating:r,recorded_at:new Date().toISOString()});b.parentElement.querySelectorAll('button').forEach(z=>z.classList.toggle('active',z===b));}));
-}
-['q','category','onlypptx','sort'].forEach(id=>$(id).addEventListener('input',render));
-$('export').addEventListener('click',()=>{if(!ratings.length){alert('Rate at least one result first.');return;}const columns=['query','asset_id','rating','recorded_at'];let csv=[columns.join(','),...ratings.map(r=>columns.map(k=>'"'+String(r[k]||'').replace(/"/g,'""')+'"').join(','))].join('\r\n');let url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));let a=document.createElement('a');a.href=url;a.download='csil_search_evaluation.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-render();</script></body></html>'''
-    page=page.replace('__DATA__',payload).replace('__SYN__',syn)
-    target=dest/'index.html';target.write_text(page,encoding='utf-8')
-    print(f'Indexed {len(items)} AI-classified assets; {missing} missing previews.')
-    print('Open in browser:',target)
-    print('Search is local keyword/synonym ranking, NOT embedding-based semantic search.')
-    print('Evaluate with relevant/not relevant buttons and Export evaluation CSV.')
-
+    ap.add_argument('--model',default=MODEL)
+    ap.add_argument('--port',type=int,default=8765)
+    ap.add_argument('--timeout',type=int,default=180)
+    args=ap.parse_args();root=args.library.resolve()
+    if args.build:build(root,args.model,args.timeout)
+    else:serve(root,args.port,args.timeout)
 if __name__=='__main__':main()
