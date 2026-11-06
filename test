@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSIL Phase 3C.1/3C.2: local brief-to-storyline + semantic recommendations + Phase 3B deck builder.
+"""CSIL Phase 3C.3: local storyline, layout-aware matching, optional AI reranking and editable deck builder.
 Keep csil_assemble_deck_fixed.py in the same src directory. Uses no cloud services.
 --build uses the unchanged Phase 2B embedding/index workflow.
 """
@@ -133,19 +133,144 @@ def generate_storyline(brief, slide_count, chat_model, timeout):
             'slides': validated, 'chat_model': chat_model}
 
 
-def suggest_assets(slides, items, embed_model, timeout, root, limit=4):
-    """Rank only indexed, physically available native-editable assets, not PNGs."""
-    pool=[x for x in items if x.get('pptx') and (root/'assets'/(x['id']+'.pptx')).is_file()]
-    if not pool: raise ValueError('No indexed editable PPTX assets found. Check your asset library/index.')
+# A small, auditable layout vocabulary. These are heuristic signals from the EXISTING
+# classified metadata, not a new vision classifier. No source/index files are changed.
+LAYOUT_TERMS = {
+    'roadmap': ('roadmap', 'timeline', 'milestone', 'implementation plan', 'phased plan', 'gantt'),
+    'process': ('process', 'workflow', 'flowchart', 'process map', 'swimlane', 'value chain'),
+    'comparison': ('comparison', 'compare', 'versus', 'vs.', 'before and after', 'current vs future', 'two column'),
+    'matrix': ('matrix', 'quadrant', '2x2', 'prioritization', 'prioritisation', 'heatmap'),
+    'operating_model': ('operating model', 'org chart', 'organisation structure', 'organizational structure', 'governance', 'operating framework'),
+    'dashboard': ('dashboard', 'kpi', 'scorecard', 'metrics', 'performance indicators'),
+    'financial': ('financial', 'revenue', 'cost', 'profit', 'waterfall', 'business case'),
+    'pyramid': ('pyramid', 'hierarchy', 'triangle', 'layered'),
+    'issue_tree': ('issue tree', 'decision tree', 'root cause', 'logic tree'),
+    'chart': ('bar chart', 'line chart', 'pie chart', 'graph', 'data visualization', 'data visualisation'),
+    'table': ('table', 'tabular', 'grid', 'comparison table'),
+    'framework': ('framework', 'pillars', 'strategic framework', 'strategy house'),
+}
+LAYOUT_LABELS = {k:k.replace('_',' ') for k in LAYOUT_TERMS}
+
+
+def _terms(text):
+    return set(re.findall(r'[a-z0-9]+', text.lower())) - {'the','and','for','with','from','into','our','this','that','slide','presentation','business','company','create','show'}
+
+
+def _layout_matches(text):
+    t = ' ' + re.sub(r'[^a-z0-9]+',' ',text.lower()) + ' '
+    found=set()
+    for label, phrases in LAYOUT_TERMS.items():
+        for phrase in phrases:
+            term=' '+re.sub(r'[^a-z0-9]+',' ',phrase.lower()).strip()+' '
+            if term in t:
+                found.add(label)
+                break
+    return found
+
+
+def _candidate_text(asset):
+    return ' '.join(clean(asset.get(k,'')) for k in
+        ('name','category','description','visual','intent','framework','uses','keywords'))
+
+
+def _hybrid_candidates(slide, pool, vector, take=10):
+    # Emphasise stated search/layout intent over potentially unrelated slide topic.
+    query=' '.join(slide.get(k,'') for k in ('search_query','title','purpose','key_message'))
+    requested=_layout_matches(slide.get('search_query','')+' '+slide.get('title',''))
+    if not requested:
+        requested=_layout_matches(query)
+    qt=_terms(query)
+    ranked=[]
+    for x in pool:
+        semantic=max(-1.0,min(1.0,cosine(vector,x['vector'])))
+        text=_candidate_text(x)
+        at=_terms(text)
+        overlap=len(qt&at)/max(1,len(qt))
+        asset_layouts=_layout_matches(text)
+        matched=requested & asset_layouts
+        mismatch=bool(requested and asset_layouts and not matched)
+        layout_score=(len(matched)/len(requested)) if requested else 0.0
+        # Normalise similarity to [0,1]; keep layout weighting explicit.
+        score=0.55*((semantic+1)/2) + 0.20*min(overlap,1) + 0.25*layout_score - (0.08 if mismatch else 0)
+        reasons=[]
+        if matched:reasons.append('Layout signal: '+', '.join(sorted(LAYOUT_LABELS[z] for z in matched)))
+        elif requested:reasons.append('Layout not confirmed in metadata: '+', '.join(sorted(LAYOUT_LABELS[z] for z in requested)))
+        if overlap:reasons.append('Keyword overlap: '+str(len(qt&at))+' terms')
+        reasons.append('Semantic similarity: '+format(semantic,'.3f'))
+        ranked.append({'id':x['id'],'name':x.get('name',x['id']),
+                       'category':x.get('category',''),'description':x.get('description',''),
+                       'visual':x.get('visual',''),'framework':x.get('framework',''),
+                       'score':round(score,4),'semantic_score':round(semantic,4),
+                       'layout_matches':sorted(matched),'reason':'; '.join(reasons),
+                       'ranker':'hybrid'})
+    ranked.sort(key=lambda a:(-a['score'],a['id']))
+    return ranked[:take]
+
+
+def _ai_rerank(slide, candidates, model, timeout):
+    """Rerank metadata only. Strictly preserve supplied candidate IDs; fail gracefully."""
+    prompt={'slide':{k:slide.get(k,'') for k in ('title','purpose','key_message','search_query')},
+            'candidates':[{'id':c['id'],'name':c['name'],'category':c['category'],
+                           'description':c['description'][:450], 'visual':c['visual'][:300],
+                           'framework':c['framework'][:160], 'hybrid_score':c['score']}
+                          for c in candidates]}
+    system=('You are a consulting slide layout assessor. Assess whether each EXISTING editable '
+            'layout visually suits the communication intent. Use only provided metadata; '
+            'do not assume you have seen the image. Return ONLY JSON: '
+            '{"ranked":[{"id":"EXACT_CANDIDATE_ID","fit":0,"reason":"brief factual reason"}]}. '
+            'fit is integer 0 to 100. Include all and only supplied IDs exactly once. '
+            'Prefer visual structures and communication intent over topical keywords. '
+            'A text-only slide is a poor match for a roadmap request.')
+    payload={'model':model,'stream':False,'think':False,'format':'json',
+             'keep_alive':'10m','options':{'num_predict':1100},
+             'messages':[{'role':'system','content':system},
+                         {'role':'user','content':json.dumps(prompt,ensure_ascii=False)}]}
+    req=urllib.request.Request('http://127.0.0.1:11434/api/chat',
+        data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req,timeout=timeout) as r:
+        raw=json.load(r)
+    result=json.loads(raw.get('message',{}).get('content',''))
+    ranked=result.get('ranked')
+    if not isinstance(ranked,list) or len(ranked)!=len(candidates):
+        raise ValueError('Invalid AI ranking length')
+    scored={}
+    valid={c['id'] for c in candidates}
+    for item in ranked:
+        if not isinstance(item,dict):raise ValueError('Invalid AI ranking entry')
+        aid=item.get('id'); fit=item.get('fit'); reason=item.get('reason','')
+        if aid not in valid or aid in scored or type(fit) not in (float,int) or not 0 <= fit <= 100:
+            raise ValueError('Invalid AI ranking identifier or fit')
+        scored[aid]=(float(fit),str(reason)[:200])
+    if set(scored)!=valid:raise ValueError('AI ranking omits a candidate')
     output=[]
-    for slide in slides:
-        q=slide['search_query'] + '\n' + slide['purpose'] + '\n' + slide['title']
-        vector=embed(q,embed_model,timeout)
-        ranked=sorted(((cosine(vector,x['vector']),x) for x in pool), key=lambda pair:pair[0],reverse=True)
-        output.append([{'id':x['id'],'name':x.get('name',x['id']),
-                        'category':x.get('category',''),'description':x.get('description',''),
-                        'score':round(score,4)} for score,x in ranked[:limit]])
+    for c in candidates:
+        c=c.copy(); fit,reason=scored[c['id']]
+        c['ai_fit']=round(fit)
+        c['score']=round(0.55*c['score']+0.45*(fit/100),4)
+        c['reason']=('AI metadata assessment: '+reason+'; '+c['reason']) if reason else c['reason']
+        c['ranker']='hybrid+local_ai'
+        output.append(c)
+    output.sort(key=lambda x:(-x['score'],x['id']))
     return output
+
+
+def suggest_assets(slides, items, embed_model, timeout, root, limit=4, rerank=False, chat_model='qwen3:14b'):
+    """Return recommendations plus per-slide warnings; preserve original index and assets."""
+    pool=[x for x in items if x.get('pptx') and re.fullmatch(r'AST-[A-Za-z0-9_-]+',str(x.get('id','')))
+          and (root/'assets'/(x['id']+'.pptx')).is_file() and isinstance(x.get('vector'),list)]
+    if not pool:raise ValueError('No indexed editable PPTX assets found. Check your asset library/index.')
+    output=[]; warnings=[]
+    for i,slide in enumerate(slides,1):
+        q=slide['search_query']+'\n'+slide['purpose']+'\n'+slide['title']
+        vector=embed(q,embed_model,timeout)
+        candidates=_hybrid_candidates(slide,pool,vector,take=min(8,len(pool)))
+        if rerank:
+            try:
+                candidates=_ai_rerank(slide,candidates,chat_model,max(timeout,180))
+            except Exception as e:
+                warnings.append(f'Slide {i}: AI reranking unavailable ({type(e).__name__}); hybrid ranking retained.')
+        output.append(candidates[:limit])
+    return output,warnings
 
 PAGE = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CSIL | Search & Deck Builder</title><style>\n*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;background:#f4f6fa;color:#1b2838;margin:0}header{background:#14243a;color:white;padding:22px 4%}header h1{margin:0 0 6px;font-size:24px}header p{margin:0;color:#c9d6e6}main{max-width:1600px;margin:auto;padding:24px 3%}.layout{display:grid;grid-template-columns:minmax(0,1fr) 365px;gap:22px;align-items:start}.bar{display:flex;gap:10px;flex-wrap:wrap}input,select,button{font:inherit;padding:10px;border:1px solid #c9d3df;border-radius:8px}input{flex:1;min-width:175px}button{background:#195a9d;color:white;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}.meta{color:#657486;font-size:13px;margin:14px 0;min-height:20px}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(265px,1fr));gap:15px}.card,.panel{background:white;border:1px solid #e0e5ec;border-radius:12px;overflow:hidden}.card img{width:100%;aspect-ratio:16/9;object-fit:contain;background:#e9edf3}.body{padding:14px}.body h3{font-size:16px;margin:0 0 8px}.body p{font-size:13px;line-height:1.5}.tag{font-size:12px;color:#4c6178;overflow-wrap:anywhere}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}.links a{color:#175d9f;font-size:13px}.rating{display:flex;gap:8px;margin-top:12px}.rating button,.small{background:white;color:#1b4c7d;padding:6px 9px;font-size:12px}.rating button.active{background:#d9ebfc}.panel{padding:16px;position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto}.panel h2{font-size:19px;margin:0 0 12px}.panel label{font-size:13px;font-weight:600;display:block;margin:12px 0 5px}.panel input{width:100%}.picked{border:1px solid #dde4ed;border-radius:8px;padding:8px;margin:10px 0;display:flex;gap:9px}.picked img{width:105px;max-width:35%;height:68px;object-fit:contain;background:#edf1f5}.picked .details{flex:1;min-width:0}.picked b{font-size:12px;display:block;overflow-wrap:anywhere}.picked .controls{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}.generate{width:100%;margin-top:12px;padding:13px;font-weight:bold}.notice{font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px}.notice.error{color:#a32425}.notice.success{color:#176237}.download a{display:block;margin:9px 0;color:#175d9f;font-size:14px}.empty{color:#66768a;font-size:13px}.selected{background:#deeee4!important;color:#16532b!important}@media(max-width:900px){.layout{grid-template-columns:1fr}.panel{position:static;max-height:none;order:-1}}\n</style></head><body><header><h1>CSIL — Search & Editable Deck Builder</h1><p>Local semantic search · Native PowerPoint slides · No cloud upload</p></header><main><div class="layout"><section><div class="bar"><input id="q" aria-label="Asset search" placeholder="Describe the slide you need, e.g. future operating model"><select id="mode" aria-label="Search mode"><option value="semantic">Semantic similarity</option><option value="keyword">Keyword baseline</option></select><button id="go">Search</button><button id="export">Export ratings CSV</button></div><div id="status" class="meta" role="status">Enter a consulting request to search your indexed assets.</div><div class="cards" id="results"></div></section><aside class="panel"><h2>Deck Builder <span id="count">(0)</span></h2><p class="empty">Add slides from search results. Use arrows to set their order. Original assets stay unchanged.</p><label for="deckTitle">Presentation title</label><input id="deckTitle" maxlength="160" value="CSIL Assembly Pilot" placeholder="Deck title"><div id="selected"><p class="empty">No slides selected.</p></div><button class="generate" id="generate" disabled>Generate editable PowerPoint</button><div id="assemblyStatus" class="notice" role="status" aria-live="polite"></div><div id="downloads" class="download"></div></aside></div></main><script>\nconst $=id=>document.getElementById(id);let ratings=[],current=\'\',currentMode=\'semantic\',selected=[],lastResults=[],busy=false;\nfunction esc(s){return String(s??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]));}\nfunction picked(id){return selected.some(x=>x.id===id)}\nfunction drawSelection(){ $(\'count\').textContent=\'(\'+selected.length+\')\';$(\'generate\').disabled=busy||selected.length===0;\n $(\'selected\').innerHTML=selected.map((x,i)=>`<div class="picked"><img src="/preview/${encodeURIComponent(x.id)}" alt="Slide preview"><div class="details"><b>${i+1}. ${esc(x.name||x.id)}</b><div class="tag">${esc(x.id)} · ${esc(x.category||\'Uncategorised\')}</div><div class="controls"><button class="small" data-action="up" data-index="${i}" ${i===0?\'disabled\':\'\'} aria-label="Move up">↑</button><button class="small" data-action="down" data-index="${i}" ${i===selected.length-1?\'disabled\':\'\'} aria-label="Move down">↓</button><button class="small" data-action="remove" data-index="${i}">Remove</button></div></div></div>`).join(\'\')||\'<p class="empty">No slides selected.</p>\';\n $(\'selected\').querySelectorAll(\'button[data-action]\').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index);if(b.dataset.action===\'remove\')selected.splice(i,1);else{const j=i+(b.dataset.action===\'up\'?-1:1);[selected[i],selected[j]]=[selected[j],selected[i]];}drawSelection();refreshAddButtons();}); }\nfunction refreshAddButtons(){document.querySelectorAll(\'[data-add]\').forEach(b=>{const isPicked=picked(b.dataset.add);b.disabled=busy||isPicked;b.textContent=isPicked?\'Added to deck\':\'Add to deck\';b.classList.toggle(\'selected\',isPicked)});}\nfunction addAsset(id){const x=lastResults.find(z=>z.id===id);if(!x||!x.pptx||picked(id))return;selected.push({id:x.id,name:x.name,category:x.category});drawSelection();refreshAddButtons();}\nasync function search(){const q=$(\'q\').value.trim();if(!q)return;current=q;currentMode=$(\'mode\').value;$(\'go\').disabled=true;$(\'status\').textContent=\'Searching local index…\';try{const r=await fetch(\'/api/search\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({query:q,mode:currentMode,limit:30})});const d=await r.json();if(!r.ok)throw Error(d.error||\'Search failed\');lastResults=d.results;$(\'status\').textContent=`${d.total} indexed assets · ${d.results.length} displayed · ${d.mode} ranking · model ${d.model}`;$(\'results\').innerHTML=d.results.map((x,i)=>`<article class="card"><img loading="lazy" src="/preview/${encodeURIComponent(x.id)}" alt="Asset preview"><div class="body"><h3>${i+1}. ${esc(x.name)}</h3><div class="tag">${esc(x.category)} · Score ${Number(x.score).toFixed(3)} · ${esc(x.id)}</div><p>${esc(x.description)}</p><p class="tag">${esc(x.visual)} · ${esc(x.framework)}</p><div class="links"><a href="/preview/${encodeURIComponent(x.id)}" target="_blank" rel="noopener">View preview</a>${x.pptx?`<a href="/pptx/${encodeURIComponent(x.id)}">Open editable PPTX</a>`:\'\'}</div><div style="margin-top:12px"><button data-add="${esc(x.id)}" ${x.pptx?\'\':\'disabled\'}>${x.pptx?\'Add to deck\':\'Editable asset unavailable\'}</button></div><div class="rating"><button data-id="${esc(x.id)}" data-rating="relevant">Relevant</button><button data-id="${esc(x.id)}" data-rating="not_relevant">Not relevant</button></div></div></article>`).join(\'\')||\'No results\';document.querySelectorAll(\'[data-add]\').forEach(b=>b.onclick=()=>addAsset(b.dataset.add));document.querySelectorAll(\'.rating button\').forEach(b=>b.onclick=()=>{ratings.push({query:current,mode:currentMode,asset_id:b.dataset.id,rating:b.dataset.rating});b.classList.add(\'active\')});refreshAddButtons();}catch(e){$(\'status\').textContent=\'Error: \'+e.message;}finally{$(\'go\').disabled=false;}}\nasync function generate(){if(busy||!selected.length)return;busy=true;drawSelection();refreshAddButtons();$(\'assemblyStatus\').className=\'notice\';$(\'assemblyStatus\').textContent=\'Building editable PowerPoint locally. PowerPoint may open during assembly…\';$(\'downloads\').replaceChildren();try{const r=await fetch(\'/api/assemble\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({asset_ids:selected.map(x=>x.id),title:$(\'deckTitle\').value.trim()})});const d=await r.json();if(!r.ok)throw Error(d.error||\'Assembly failed\');$(\'assemblyStatus\').className=\'notice success\';$(\'assemblyStatus\').textContent=`Created ${d.total_slides} editable slide(s) from ${d.asset_count} selected asset(s). Inspect formatting and editable shapes in PowerPoint.`;const a=document.createElement(\'a\');a.href=d.pptx_url;a.textContent=\'Open / download editable PowerPoint\';const b=document.createElement(\'a\');b.href=d.report_url;b.textContent=\'View assembly report (JSON)\';$(\'downloads\').append(a,b);}catch(e){$(\'assemblyStatus\').className=\'notice error\';$(\'assemblyStatus\').textContent=\'Assembly error: \'+e.message;}finally{busy=false;drawSelection();refreshAddButtons();}}\n$(\'go\').onclick=search;$(\'q\').onkeydown=e=>{if(e.key===\'Enter\')search()};$(\'generate\').onclick=generate;\n$(\'export\').onclick=()=>{if(!ratings.length){alert(\'Rate some results first\');return}const cols=[\'query\',\'mode\',\'asset_id\',\'rating\'];const csv=[cols.join(\',\'),...ratings.map(r=>cols.map(k=>\'"\'+String(r[k]).replace(/"/g,\'""\')+\'"\').join(\',\'))].join(\'\\r\\n\');const u=URL.createObjectURL(new Blob([csv],{type:\'text/csv\'}));const a=document.createElement(\'a\');a.href=u;a.download=\'csil_semantic_evaluation.csv\';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};\ndrawSelection();\n</script></body></html>'
 
@@ -157,8 +282,8 @@ _BRIEF_HTML = """
 <p class="empty">The local language model proposes a slide outline. Semantic search then matches each proposed slide to editable assets. Review every recommendation: assets are reusable layouts, not populated client content.</p>
 <label for="brief">Consulting brief</label>
 <textarea id="brief" rows="4" maxlength="5000" placeholder="Create an executive presentation on transforming the operating model from current state to future state, covering the rationale, target design, roadmap and benefits."></textarea>
-<div class="briefbar"><label for="slideCount">Slides <select id="slideCount"><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option></select></label><button id="makeOutline">1. Generate storyline</button><button id="findMatches" disabled>2. Match editable assets</button><button id="loadOutline" disabled>3. Load choices into Deck Builder</button></div>
-<div id="briefStatus" class="notice" role="status" aria-live="polite"></div><div id="outline"></div>
+<div class="briefbar"><label for="slideCount">Slides <select id="slideCount"><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option></select></label><button id="makeOutline">1. Generate storyline</button><label class="aiChoice"><input id="aiRerank" type="checkbox"> AI rerank (slower)</label><button id="findMatches" disabled>2. Match editable assets</button><button id="loadOutline" disabled>3. Load choices into Deck Builder</button></div>
+<button class="small" id="exportFeedback" disabled>Export matching feedback CSV</button><div id="briefStatus" class="notice" role="status" aria-live="polite"></div><div id="outline"></div>
 </section>
 """
 _BRIEF_STYLE = """
@@ -171,29 +296,31 @@ _BRIEF_STYLE = """
 .candidates{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;margin-top:10px}
 .candidate{border:1px solid #dfe5ed;padding:7px;border-radius:7px;font-size:12px}
 .candidate img{width:100%;height:94px;object-fit:contain;background:#e9edf3}
-.candidate button{font-size:12px;padding:6px;margin-top:6px;width:100%}.candidate.chosen{outline:2px solid #24805c}
+.candidate button{font-size:12px;padding:6px;margin-top:6px;width:100%}.aiChoice{display:flex;align-items:center;gap:5px}.aiChoice input{width:auto;min-width:0}.candidate .reason{font-size:11px;color:#52657b;margin-top:5px}.candidate .feedback{display:flex;gap:4px}.candidate .feedback button{flex:1;width:auto}.candidate .feedback button.active{background:#d9ebfc}.candidate .score{font-size:11px;color:#4c6178}.candidate.chosen{outline:2px solid #24805c}
 """
 _BRIEF_JS = r"""
-let outlineData=null, matchData=null, choices=[];
+let outlineData=null, matchData=null, choices=[], matchFeedback={};
 function briefStatus(message, failed=false){$('briefStatus').textContent=message;$('briefStatus').className='notice'+(failed?' error':'');}
 function renderOutline(){
  if(!outlineData)return;
- $('outline').innerHTML=outlineData.slides.map((s,i)=>`<div class="outlineCard"><h3>${i+1}. ${esc(s.title)}</h3><p><b>Purpose:</b> ${esc(s.purpose)}</p><p><b>Message:</b> ${esc(s.key_message)}</p><p class="tag">Asset search: ${esc(s.search_query)}</p><div class="candidates">${(matchData?.[i]||[]).map((a,j)=>`<div class="candidate ${choices[i]===a.id?'chosen':''}"><img loading="lazy" src="/preview/${encodeURIComponent(a.id)}" alt="Asset preview"><div><b>${esc(a.name)}</b></div><div class="tag">${esc(a.category)} · ${Number(a.score).toFixed(3)}</div><a target="_blank" rel="noopener" href="/preview/${encodeURIComponent(a.id)}">Preview</a><button data-slide="${i}" data-choice="${j}">${choices[i]===a.id?'Selected':'Choose layout'}</button></div>`).join('')}</div></div>`).join('');
+ $('outline').innerHTML=outlineData.slides.map((s,i)=>`<div class="outlineCard"><h3>${i+1}. ${esc(s.title)}</h3><p><b>Purpose:</b> ${esc(s.purpose)}</p><p><b>Message:</b> ${esc(s.key_message)}</p><p class="tag">Asset search: ${esc(s.search_query)}</p><div class="candidates">${(matchData?.[i]||[]).map((a,j)=>`<div class="candidate ${choices[i]===a.id?'chosen':''}"><img loading="lazy" src="/preview/${encodeURIComponent(a.id)}" alt="Asset preview"><div><b>${esc(a.name)}</b></div><div class="score">${esc(a.category)} · Rank score ${Number(a.score).toFixed(3)} · ${esc(a.ranker||'hybrid')}</div><div class="reason">${esc(a.reason||'')}</div><div class="feedback"><button data-feedback="good" data-slide="${i}" data-candidate="${j}" class="${matchFeedback[i+'|'+a.id]==='good'?'active':''}">Good fit</button><button data-feedback="poor" data-slide="${i}" data-candidate="${j}" class="${matchFeedback[i+'|'+a.id]==='poor'?'active':''}">Poor fit</button></div><a target="_blank" rel="noopener" href="/preview/${encodeURIComponent(a.id)}">Preview</a><button data-slide="${i}" data-choice="${j}">${choices[i]===a.id?'Selected':'Choose layout'}</button></div>`).join('')}</div></div>`).join('');
  $('outline').querySelectorAll('[data-choice]').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.slide),j=Number(b.dataset.choice),id=matchData[i][j].id;choices[i]=id;renderOutline();});
+ $('outline').querySelectorAll('[data-feedback]').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.slide),j=Number(b.dataset.candidate),id=matchData[i][j].id;matchFeedback[i+'|'+id]=b.dataset.feedback;renderOutline();});
+ $('exportFeedback').disabled=!matchData;
  $('loadOutline').disabled=!matchData||choices.filter(Boolean).length!==outlineData.slides.length;
 }
 $('makeOutline').onclick=async()=>{
  const brief=$('brief').value.trim(), count=Number($('slideCount').value);
  if(brief.length<20){briefStatus('Please enter at least 20 characters for the brief.',true);return;}
  $('makeOutline').disabled=true;$('findMatches').disabled=true;$('loadOutline').disabled=true;
- outlineData=null;matchData=null;choices=[];$('outline').replaceChildren();briefStatus('Asking your local Ollama model to propose a storyline…');
+ outlineData=null;matchData=null;choices=[];matchFeedback={};$('exportFeedback').disabled=true;$('outline').replaceChildren();briefStatus('Asking your local Ollama model to propose a storyline…');
  try{const r=await fetch('/api/brief',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({brief,slide_count:count})});const d=await r.json();if(!r.ok)throw Error(d.error||'Storyline request failed');outlineData=d;renderOutline();$('findMatches').disabled=false;$('deckTitle').value=d.deck_title;briefStatus(`Generated ${d.slides.length} proposed slides using ${d.chat_model}. Review the storyline, then match assets.`)}
  catch(e){briefStatus('Storyline error: '+e.message,true)}finally{$('makeOutline').disabled=false;}
 };
 $('findMatches').onclick=async()=>{
  if(!outlineData)return;$('findMatches').disabled=true;$('loadOutline').disabled=true;briefStatus('Embedding slide needs and matching against your local asset index…');
- try{const r=await fetch('/api/recommend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slides:outlineData.slides})});const d=await r.json();if(!r.ok)throw Error(d.error||'Recommendations failed');matchData=d.recommendations;
-  const used=new Set();choices=matchData.map(group=>{const first=group.find(a=>!used.has(a.id));if(first){used.add(first.id);return first.id}return null});renderOutline();briefStatus(`Matched ${matchData.length} slide needs. Suggested unique assets where available; review and adjust choices before loading.`);}
+ try{const r=await fetch('/api/recommend',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slides:outlineData.slides,ai_rerank:$('aiRerank').checked})});const d=await r.json();if(!r.ok)throw Error(d.error||'Recommendations failed');matchData=d.recommendations;matchFeedback={};
+  const used=new Set();choices=matchData.map(group=>{const first=group.find(a=>!used.has(a.id));if(first){used.add(first.id);return first.id}return null});renderOutline();briefStatus(`Matched ${matchData.length} slide needs. Review layout explanations and rate candidates. ${(d.warnings||[]).join(' ')}`);}
  catch(e){briefStatus('Matching error: '+e.message,true)}finally{$('findMatches').disabled=false;}
 };
 $('loadOutline').onclick=()=>{
@@ -202,6 +329,16 @@ $('loadOutline').onclick=()=>{
  selected=choices.map((id,i)=>{const a=matchData[i].find(x=>x.id===id);return {id:a.id,name:a.name,category:a.category}});
  drawSelection();refreshAddButtons();$('deckTitle').value=outlineData.deck_title;briefStatus('Loaded the chosen assets in storyline order. Review the tray and generate the editable PowerPoint. Brief-specific text is not inserted into slide shapes yet.');
 };
+$('exportFeedback').onclick=()=>{
+ if(!outlineData||!matchData)return;
+ const cols=['slide_number','slide_title','search_query','asset_id','rank','ranker','score','chosen','feedback','reason'];
+ const rows=[];
+ matchData.forEach((group,i)=>group.forEach((a,j)=>rows.push({slide_number:i+1,slide_title:outlineData.slides[i].title,search_query:outlineData.slides[i].search_query,asset_id:a.id,rank:j+1,ranker:a.ranker||'hybrid',score:a.score,chosen:choices[i]===a.id?'yes':'no',feedback:matchFeedback[i+'|'+a.id]||'',reason:a.reason||''})));
+ const csv=[cols.join(','),...rows.map(r=>cols.map(k=>'"'+String(r[k]??'').replace(/"/g,'""')+'"').join(','))].join('\r\n');
+ const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+ const a=document.createElement('a');a.href=url;a.download='csil_matching_feedback.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+
 """
 PAGE = PAGE.replace('</style>', _BRIEF_STYLE+'</style>').replace('<div class="layout">', _BRIEF_HTML+'<div class="layout">').replace('</body>', '<script>'+_BRIEF_JS+'</script></body>')
 
@@ -318,9 +455,12 @@ def serve(root, port, timeout, chat_model):
                             if not isinstance(v,str) or not 1 <= len(v.strip()) <= 400:
                                 raise ValueError(f'Invalid slide {key}')
                             fields[key]=v.strip()
+                        fields['key_message']=str(s.get('key_message',''))[:400]
                         validated.append(fields)
-                    matched=suggest_assets(validated,items,model,timeout,root)
-                    return self.send(json.dumps({'recommendations':matched},ensure_ascii=False))
+                    rerank=req.get('ai_rerank',False)
+                    if type(rerank) is not bool:raise ValueError('ai_rerank must be boolean')
+                    matched,warnings=suggest_assets(validated,items,model,timeout,root,rerank=rerank,chat_model=chat_model)
+                    return self.send(json.dumps({'recommendations':matched,'warnings':warnings},ensure_ascii=False))
                 if self.path == '/api/search':
                     q = str(req.get('query','')).strip()[:1000]
                     if not q: raise ValueError('Empty query')
@@ -385,7 +525,7 @@ def serve(root, port, timeout, chat_model):
                 return self.error('Unexpected server error. See server terminal for details.',500)
 
     server = ThreadingHTTPServer(('127.0.0.1',port),Handler)
-    print(f'CSIL Phase 3B gallery: http://127.0.0.1:{port}/ (Ctrl+C to stop)')
+    print(f'CSIL Phase 3C.3 gallery: http://127.0.0.1:{port}/ (Ctrl+C to stop)')
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally: server.server_close()
