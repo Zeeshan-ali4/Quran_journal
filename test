@@ -1,193 +1,251 @@
 #!/usr/bin/env python3
-"""CSIL Phase 3A: assemble existing editable asset PPTX slides into a new PPTX.
-
-Windows PowerPoint desktop + pywin32 required for assembly. Dry-run works without them.
-Examples:
-  py src/csil_assemble_deck.py --ids AST-AAAA AST-BBBB --dry-run
-  py src/csil_assemble_deck.py --ids AST-AAAA AST-BBBB --title "Pilot deck"
-  py src/csil_assemble_deck.py --selection selected_assets.txt --output output/my_deck.pptx
-
-Each asset PPTX is inserted as a native PowerPoint slide (not rasterized).
-No source PPTX files are modified. Review slide size, theme, fonts, links, and editability.
+"""CSIL Phase 3B: local semantic search + native editable deck builder.
+Keep csil_assemble_deck_fixed.py in the same src directory. Uses no cloud services.
+--build uses the unchanged Phase 2B embedding/index workflow.
 """
-import argparse
-import csv
-import json
-import re
-import shutil
-import sys
-from datetime import datetime
+import argparse, hashlib, html, json, math, re, sys, urllib.request, urllib.error, webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
-ID_RE = re.compile(r'^AST-[A-Za-z0-9_-]+$', re.I)
-PP_PPTX = 24
+MODEL='embeddinggemma'
+def clean(v):
+    if v is None:return ''
+    if isinstance(v,(dict,list)):return ' '.join(clean(x) for x in (v.values() if isinstance(v,dict) else v))
+    return str(v)
+def embed(text, model, timeout):
+    data=json.dumps({'model':model,'input':text,'truncate':True,'keep_alive':'10m'}).encode()
+    req=urllib.request.Request('http://127.0.0.1:11434/api/embed',data=data,headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req,timeout=timeout) as resp:result=json.load(resp)
+    vec=result.get('embeddings',[None])[0]
+    if not isinstance(vec,list) or not vec:raise RuntimeError('No embedding returned by Ollama')
+    norm=math.sqrt(sum(x*x for x in vec))
+    if not norm:raise RuntimeError('Zero-length embedding')
+    return [round(x/norm,7) for x in vec]
+def cosine(a,b):return sum(x*y for x,y in zip(a,b)) if len(a)==len(b) else -1
 
+def collect(root):
+    src=root/'ollama_classifications_smart'/'catalogue_ollama_enriched.json'
+    if not src.exists():raise FileNotFoundError(f'Missing {src}. Run smart classifier --plan first.')
+    obj=json.loads(src.read_text(encoding='utf-8-sig'))
+    items=[]
+    for a in obj['assets']:
+        c=a.get('ollama_classification')
+        if not isinstance(c,dict):continue
+        aid=str(a.get('asset_id',''))
+        if not re.fullmatch('[A-Za-z0-9_-]+',aid):continue
+        if not (root/'previews'/f'{aid}.png').exists():continue
+        item={'id':aid,'name':clean(c.get('asset_name')) or aid,
+              'category':clean(a.get('asset_category') or a.get('asset_type')),
+              'description':clean(c.get('description')),
+              'visual':clean(c.get('visual_structure')),
+              'intent':clean(c.get('communication_intent')),
+              'framework':clean(c.get('consulting_framework')),
+              'uses':clean(c.get('consulting_use_cases')),
+              'keywords':clean(c.get('search_keywords')),
+              'slide_text':clean(a.get('extracted_text'))[:1800],
+              'pptx':(root/'assets'/f'{aid}.pptx').exists(),
+              'confidence':c.get('confidence',None)}
+        item['text']='\n'.join(f'{k}: {item[k]}' for k in ('name','category','description','visual','intent','framework','uses','keywords','slide_text') if item[k])[:5500]
+        items.append(item)
+    return items
 
-def parse_selection(path):
-    if path.suffix.lower() == '.json':
-        obj = json.loads(path.read_text(encoding='utf-8-sig'))
-        if isinstance(obj, dict):
-            obj = obj.get('asset_ids', obj.get('ids', obj.get('assets', [])))
-        if not isinstance(obj, list):
-            raise ValueError('JSON selection must be a list or an object with asset_ids/ids/assets list')
-        return [str(x.get('asset_id', x.get('id', '')) if isinstance(x, dict) else x).strip() for x in obj]
-    if path.suffix.lower() == '.csv':
-        with path.open(encoding='utf-8-sig', newline='') as f:
-            rows = csv.DictReader(f)
-            if not rows.fieldnames:
-                raise ValueError('CSV must have an asset_id or id header')
-            col = next((x for x in rows.fieldnames if x.strip().lower() in ('asset_id', 'id')), None)
-            if col is None:
-                raise ValueError('CSV must have an asset_id or id column')
-            return [str(row.get(col, '')).strip() for row in rows]
-    return [line.strip() for line in path.read_text(encoding='utf-8-sig').splitlines()
-            if line.strip() and not line.lstrip().startswith('#')]
+def build(root,model,timeout):
+    items=collect(root)
+    dest=root/'semantic_search';dest.mkdir(exist_ok=True)
+    cache_path=dest/'embedding_cache.json'
+    cache=json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.exists() else {}
+    # Model key prevents accidental mixing of different embedding spaces.
+    cache={k:v for k,v in cache.items() if isinstance(v,dict) and v.get('model')==model}
+    failures=[];indexed=[];new=0
+    for n,item in enumerate(items,1):
+        key=item['id'];digest=hashlib.sha256(item['text'].encode()).hexdigest()
+        prior=cache.get(key)
+        if not prior or prior.get('digest')!=digest:
+            try:
+                vector=embed(item['text'],model,timeout)
+                cache[key]={'model':model,'digest':digest,'vector':vector}
+                new+=1
+                if new%10==0:
+                    cache_path.write_text(json.dumps(cache),encoding='utf-8')
+                    print(f'Embedded {new} new assets ({n}/{len(items)})',flush=True)
+            except Exception as e:
+                failures.append((key,str(e)))
+                print(f'ERROR {key}: {e}',file=sys.stderr)
+                continue
+        indexed.append({k:v for k,v in item.items() if k!='text'}|{'vector':cache[key]['vector']})
+    cache_path.write_text(json.dumps(cache),encoding='utf-8')
+    (dest/'index.json').write_text(json.dumps({'model':model,'items':indexed},ensure_ascii=False),encoding='utf-8')
+    print(f'Indexed {len(indexed)} assets; new embeddings: {new}; failures: {len(failures)}')
+    print(f'Index: {dest / "index.json"}')
+    if failures:print('Failed IDs:',', '.join(x[0] for x in failures[:20]))
 
+PAGE = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CSIL | Search & Deck Builder</title><style>\n*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;background:#f4f6fa;color:#1b2838;margin:0}header{background:#14243a;color:white;padding:22px 4%}header h1{margin:0 0 6px;font-size:24px}header p{margin:0;color:#c9d6e6}main{max-width:1600px;margin:auto;padding:24px 3%}.layout{display:grid;grid-template-columns:minmax(0,1fr) 365px;gap:22px;align-items:start}.bar{display:flex;gap:10px;flex-wrap:wrap}input,select,button{font:inherit;padding:10px;border:1px solid #c9d3df;border-radius:8px}input{flex:1;min-width:175px}button{background:#195a9d;color:white;cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}.meta{color:#657486;font-size:13px;margin:14px 0;min-height:20px}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(265px,1fr));gap:15px}.card,.panel{background:white;border:1px solid #e0e5ec;border-radius:12px;overflow:hidden}.card img{width:100%;aspect-ratio:16/9;object-fit:contain;background:#e9edf3}.body{padding:14px}.body h3{font-size:16px;margin:0 0 8px}.body p{font-size:13px;line-height:1.5}.tag{font-size:12px;color:#4c6178;overflow-wrap:anywhere}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}.links a{color:#175d9f;font-size:13px}.rating{display:flex;gap:8px;margin-top:12px}.rating button,.small{background:white;color:#1b4c7d;padding:6px 9px;font-size:12px}.rating button.active{background:#d9ebfc}.panel{padding:16px;position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto}.panel h2{font-size:19px;margin:0 0 12px}.panel label{font-size:13px;font-weight:600;display:block;margin:12px 0 5px}.panel input{width:100%}.picked{border:1px solid #dde4ed;border-radius:8px;padding:8px;margin:10px 0;display:flex;gap:9px}.picked img{width:105px;max-width:35%;height:68px;object-fit:contain;background:#edf1f5}.picked .details{flex:1;min-width:0}.picked b{font-size:12px;display:block;overflow-wrap:anywhere}.picked .controls{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}.generate{width:100%;margin-top:12px;padding:13px;font-weight:bold}.notice{font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px}.notice.error{color:#a32425}.notice.success{color:#176237}.download a{display:block;margin:9px 0;color:#175d9f;font-size:14px}.empty{color:#66768a;font-size:13px}.selected{background:#deeee4!important;color:#16532b!important}@media(max-width:900px){.layout{grid-template-columns:1fr}.panel{position:static;max-height:none;order:-1}}\n</style></head><body><header><h1>CSIL — Search & Editable Deck Builder</h1><p>Local semantic search · Native PowerPoint slides · No cloud upload</p></header><main><div class="layout"><section><div class="bar"><input id="q" aria-label="Asset search" placeholder="Describe the slide you need, e.g. future operating model"><select id="mode" aria-label="Search mode"><option value="semantic">Semantic similarity</option><option value="keyword">Keyword baseline</option></select><button id="go">Search</button><button id="export">Export ratings CSV</button></div><div id="status" class="meta" role="status">Enter a consulting request to search your indexed assets.</div><div class="cards" id="results"></div></section><aside class="panel"><h2>Deck Builder <span id="count">(0)</span></h2><p class="empty">Add slides from search results. Use arrows to set their order. Original assets stay unchanged.</p><label for="deckTitle">Presentation title</label><input id="deckTitle" maxlength="160" value="CSIL Assembly Pilot" placeholder="Deck title"><div id="selected"><p class="empty">No slides selected.</p></div><button class="generate" id="generate" disabled>Generate editable PowerPoint</button><div id="assemblyStatus" class="notice" role="status" aria-live="polite"></div><div id="downloads" class="download"></div></aside></div></main><script>\nconst $=id=>document.getElementById(id);let ratings=[],current=\'\',currentMode=\'semantic\',selected=[],lastResults=[],busy=false;\nfunction esc(s){return String(s??\'\').replace(/[&<>"\']/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[c]));}\nfunction picked(id){return selected.some(x=>x.id===id)}\nfunction drawSelection(){ $(\'count\').textContent=\'(\'+selected.length+\')\';$(\'generate\').disabled=busy||selected.length===0;\n $(\'selected\').innerHTML=selected.map((x,i)=>`<div class="picked"><img src="/preview/${encodeURIComponent(x.id)}" alt="Slide preview"><div class="details"><b>${i+1}. ${esc(x.name||x.id)}</b><div class="tag">${esc(x.id)} · ${esc(x.category||\'Uncategorised\')}</div><div class="controls"><button class="small" data-action="up" data-index="${i}" ${i===0?\'disabled\':\'\'} aria-label="Move up">↑</button><button class="small" data-action="down" data-index="${i}" ${i===selected.length-1?\'disabled\':\'\'} aria-label="Move down">↓</button><button class="small" data-action="remove" data-index="${i}">Remove</button></div></div></div>`).join(\'\')||\'<p class="empty">No slides selected.</p>\';\n $(\'selected\').querySelectorAll(\'button[data-action]\').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.index);if(b.dataset.action===\'remove\')selected.splice(i,1);else{const j=i+(b.dataset.action===\'up\'?-1:1);[selected[i],selected[j]]=[selected[j],selected[i]];}drawSelection();refreshAddButtons();}); }\nfunction refreshAddButtons(){document.querySelectorAll(\'[data-add]\').forEach(b=>{const isPicked=picked(b.dataset.add);b.disabled=busy||isPicked;b.textContent=isPicked?\'Added to deck\':\'Add to deck\';b.classList.toggle(\'selected\',isPicked)});}\nfunction addAsset(id){const x=lastResults.find(z=>z.id===id);if(!x||!x.pptx||picked(id))return;selected.push({id:x.id,name:x.name,category:x.category});drawSelection();refreshAddButtons();}\nasync function search(){const q=$(\'q\').value.trim();if(!q)return;current=q;currentMode=$(\'mode\').value;$(\'go\').disabled=true;$(\'status\').textContent=\'Searching local index…\';try{const r=await fetch(\'/api/search\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({query:q,mode:currentMode,limit:30})});const d=await r.json();if(!r.ok)throw Error(d.error||\'Search failed\');lastResults=d.results;$(\'status\').textContent=`${d.total} indexed assets · ${d.results.length} displayed · ${d.mode} ranking · model ${d.model}`;$(\'results\').innerHTML=d.results.map((x,i)=>`<article class="card"><img loading="lazy" src="/preview/${encodeURIComponent(x.id)}" alt="Asset preview"><div class="body"><h3>${i+1}. ${esc(x.name)}</h3><div class="tag">${esc(x.category)} · Score ${Number(x.score).toFixed(3)} · ${esc(x.id)}</div><p>${esc(x.description)}</p><p class="tag">${esc(x.visual)} · ${esc(x.framework)}</p><div class="links"><a href="/preview/${encodeURIComponent(x.id)}" target="_blank" rel="noopener">View preview</a>${x.pptx?`<a href="/pptx/${encodeURIComponent(x.id)}">Open editable PPTX</a>`:\'\'}</div><div style="margin-top:12px"><button data-add="${esc(x.id)}" ${x.pptx?\'\':\'disabled\'}>${x.pptx?\'Add to deck\':\'Editable asset unavailable\'}</button></div><div class="rating"><button data-id="${esc(x.id)}" data-rating="relevant">Relevant</button><button data-id="${esc(x.id)}" data-rating="not_relevant">Not relevant</button></div></div></article>`).join(\'\')||\'No results\';document.querySelectorAll(\'[data-add]\').forEach(b=>b.onclick=()=>addAsset(b.dataset.add));document.querySelectorAll(\'.rating button\').forEach(b=>b.onclick=()=>{ratings.push({query:current,mode:currentMode,asset_id:b.dataset.id,rating:b.dataset.rating});b.classList.add(\'active\')});refreshAddButtons();}catch(e){$(\'status\').textContent=\'Error: \'+e.message;}finally{$(\'go\').disabled=false;}}\nasync function generate(){if(busy||!selected.length)return;busy=true;drawSelection();refreshAddButtons();$(\'assemblyStatus\').className=\'notice\';$(\'assemblyStatus\').textContent=\'Building editable PowerPoint locally. PowerPoint may open during assembly…\';$(\'downloads\').replaceChildren();try{const r=await fetch(\'/api/assemble\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({asset_ids:selected.map(x=>x.id),title:$(\'deckTitle\').value.trim()})});const d=await r.json();if(!r.ok)throw Error(d.error||\'Assembly failed\');$(\'assemblyStatus\').className=\'notice success\';$(\'assemblyStatus\').textContent=`Created ${d.total_slides} editable slide(s) from ${d.asset_count} selected asset(s). Inspect formatting and editable shapes in PowerPoint.`;const a=document.createElement(\'a\');a.href=d.pptx_url;a.textContent=\'Open / download editable PowerPoint\';const b=document.createElement(\'a\');b.href=d.report_url;b.textContent=\'View assembly report (JSON)\';$(\'downloads\').append(a,b);}catch(e){$(\'assemblyStatus\').className=\'notice error\';$(\'assemblyStatus\').textContent=\'Assembly error: \'+e.message;}finally{busy=false;drawSelection();refreshAddButtons();}}\n$(\'go\').onclick=search;$(\'q\').onkeydown=e=>{if(e.key===\'Enter\')search()};$(\'generate\').onclick=generate;\n$(\'export\').onclick=()=>{if(!ratings.length){alert(\'Rate some results first\');return}const cols=[\'query\',\'mode\',\'asset_id\',\'rating\'];const csv=[cols.join(\',\'),...ratings.map(r=>cols.map(k=>\'"\'+String(r[k]).replace(/"/g,\'""\')+\'"\').join(\',\'))].join(\'\\r\\n\');const u=URL.createObjectURL(new Blob([csv],{type:\'text/csv\'}));const a=document.createElement(\'a\');a.href=u;a.download=\'csil_semantic_evaluation.csv\';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};\ndrawSelection();\n</script></body></html>'
 
-def check_assets(ids, library):
-    if not ids:
-        raise ValueError('No asset IDs provided. Use --ids or --selection.')
-    for aid in ids:
-        if not ID_RE.fullmatch(aid):
-            raise ValueError(f'Invalid asset ID: {aid!r}. Expected AST-...')
-    entries = []
-    for aid in ids:
-        p = library / 'assets' / (aid + '.pptx')
-        if not p.is_file():
-            raise FileNotFoundError(f'Editable asset missing: {p}')
-        entries.append((aid, p.resolve()))
-    return entries
+def serve(root, port, timeout):
+    """Expose search, immutable asset downloads and serialized COM assembly on loopback."""
+    import subprocess
+    import threading
+    import uuid
+    from urllib.parse import quote
 
+    root = root.resolve()
+    idx = root / 'semantic_search' / 'index.json'
+    if not idx.is_file():
+        raise FileNotFoundError(f'Missing {idx}. Run --build first.')
+    data = json.loads(idx.read_text(encoding='utf-8'))
+    model, items = data['model'], data['items']
+    by_id = {x['id']: x for x in items if re.fullmatch(r'AST-[A-Za-z0-9_-]+', str(x.get('id','')))}
+    if len(by_id) == 0:
+        raise ValueError('The search index contains no valid AST asset IDs.')
+    script = Path(__file__).resolve().with_name('csil_assemble_deck_fixed.py')
+    if not script.is_file():
+        raise FileNotFoundError(f'Assembler not found beside this script: {script}')
+    project = root.parent
+    out_dir = (project / 'assembled_decks').resolve()
+    assemble_lock = threading.Lock()
+
+    class Handler(BaseHTTPRequestHandler):
+        def send(self, body, typ='application/json; charset=utf-8', status=200, extra=None):
+            if isinstance(body, str): body = body.encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', typ)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            if extra: self.send_header(*extra)
+            self.end_headers()
+            try: self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError): pass
+
+        def error(self, message, status=400):
+            self.send(json.dumps({'error': str(message)}, ensure_ascii=False), status=status)
+
+        def read_json(self):
+            if self.headers.get('Content-Type', '').split(';',1)[0].lower() != 'application/json':
+                raise ValueError('Expected application/json')
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 20000: raise ValueError('Request body must be 1–20000 bytes')
+            obj = json.loads(self.rfile.read(length))
+            if not isinstance(obj, dict): raise ValueError('Request must be a JSON object')
+            return obj
+
+        def do_GET(self):
+            path = urlparse(self.path).path
+            if path == '/': return self.send(PAGE, 'text/html; charset=utf-8')
+            m = re.fullmatch(r'/(preview|pptx)/([A-Za-z0-9_-]+)', path)
+            if m:
+                kind, aid = m.groups()
+                if aid not in by_id: return self.error('Not found', 404)
+                folder = 'previews' if kind == 'preview' else 'assets'
+                ext = '.png' if kind == 'preview' else '.pptx'
+                p = (root / folder / (aid + ext)).resolve()
+                if not p.is_relative_to((root / folder).resolve()) or not p.is_file():
+                    return self.error('File not found', 404)
+                typ = 'image/png' if kind == 'preview' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                extra = None if kind == 'preview' else ('Content-Disposition', f'attachment; filename="{aid}.pptx"')
+                return self.send(p.read_bytes(), typ, extra=extra)
+            m = re.fullmatch(r'/generated/(CSIL_[a-f0-9]{32})\.(pptx|assembly\.json)', path)
+            if m:
+                stem, ext = m.groups()
+                p = (out_dir / (stem + '.' + ext)).resolve()
+                if not p.is_relative_to(out_dir) or not p.is_file(): return self.error('Generated file not found', 404)
+                typ = 'application/json' if ext == 'assembly.json' else 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                extra = ('Content-Disposition', f'attachment; filename="{p.name}"')
+                return self.send(p.read_bytes(), typ, extra=extra)
+            return self.error('Not found', 404)
+
+        def do_POST(self):
+            # Browser-origin checks reduce cross-site triggering of a local COM process.
+            host = self.headers.get('Host','')
+            if host not in (f'127.0.0.1:{port}', f'localhost:{port}'):
+                return self.error('Invalid Host header', 403)
+            origin = self.headers.get('Origin')
+            if origin and origin not in (f'http://127.0.0.1:{port}', f'http://localhost:{port}'):
+                return self.error('Cross-origin request blocked', 403)
+            if self.path not in ('/api/search', '/api/assemble'): return self.error('Not found', 404)
+            try:
+                req = self.read_json()
+                if self.path == '/api/search':
+                    q = str(req.get('query','')).strip()[:1000]
+                    if not q: raise ValueError('Empty query')
+                    mode = req.get('mode','semantic')
+                    limit = min(50, max(1, int(req.get('limit',30))))
+                    if mode == 'semantic':
+                        v = embed(q, model, timeout)
+                        scored = [(cosine(v,x['vector']), x) for x in items]
+                    elif mode == 'keyword':
+                        words = set(re.findall(r'[a-z0-9]+',q.lower()))
+                        scored = []
+                        for x in items:
+                            fields = ' '.join(clean(x.get(k,'')) for k in ('name','description','visual','intent','framework','uses','keywords','slide_text')).lower()
+                            tokens = set(re.findall(r'[a-z0-9]+',fields))
+                            score = len(words & tokens)/max(len(words),1) + (0.2 if q.lower() in fields else 0)
+                            scored.append((score,x))
+                    else: raise ValueError('Unknown search mode')
+                    scored.sort(key=lambda t:t[0],reverse=True)
+                    results = [{k:v for k,v in x.items() if k!='vector'}|{'score':round(s,4)} for s,x in scored[:limit]]
+                    return self.send(json.dumps({'model':model,'mode':mode,'total':len(items),'results':results},ensure_ascii=False))
+
+                ids = req.get('asset_ids')
+                if not isinstance(ids,list) or not ids: raise ValueError('Select at least one asset')
+                if len(ids)>100: raise ValueError('Maximum 100 assets per deck')
+                if not all(isinstance(a,str) and re.fullmatch(r'AST-[A-Za-z0-9_-]+',a) for a in ids):
+                    raise ValueError('Invalid asset ID; expected AST-...')
+                if len(ids)!=len(set(ids)): raise ValueError('Duplicate asset IDs are not allowed')
+                for aid in ids:
+                    if aid not in by_id: raise ValueError(f'Asset not in search catalogue: {aid}')
+                    p = (root/'assets'/(aid+'.pptx')).resolve()
+                    if not p.is_relative_to((root/'assets').resolve()) or not p.is_file():
+                        raise ValueError(f'Editable PPTX missing: {aid}')
+                title = req.get('title','')
+                if not isinstance(title,str) or len(title)>160 or any(ord(c)<32 for c in title):
+                    raise ValueError('Title must be plain text of at most 160 characters')
+                if not assemble_lock.acquire(blocking=False):
+                    return self.error('Another deck assembly is already running. Try again after it finishes.',409)
+                try:
+                    # Random server-generated basename; no user-controlled output paths.
+                    stem = 'CSIL_' + uuid.uuid4().hex
+                    out = out_dir / (stem + '.pptx')
+                    cmd = [sys.executable, str(script), '--ids', *ids, '--library', str(root),
+                           '--output', str(out), '--title', title]
+                    result = subprocess.run(cmd, cwd=str(project), capture_output=True,
+                                            text=True, errors='replace', timeout=900, shell=False)
+                    report = out.with_suffix('.assembly.json')
+                    if result.returncode != 0 or not out.is_file() or not report.is_file():
+                        detail = (result.stderr or result.stdout or 'No output from assembler').strip()
+                        return self.error('PowerPoint assembly failed: ' + detail[-3000:], 500)
+                    info = json.loads(report.read_text(encoding='utf-8'))
+                    return self.send(json.dumps({'asset_count':len(ids),'total_slides':info.get('total_slides',0),
+                                      'pptx_url':'/generated/'+stem+'.pptx',
+                                      'report_url':'/generated/'+stem+'.assembly.json'}))
+                except subprocess.TimeoutExpired:
+                    return self.error('PowerPoint assembly exceeded 15 minutes. Check PowerPoint for dialogs; inspect output folder before retrying.',504)
+                finally:
+                    assemble_lock.release()
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                return self.error(str(e),400)
+            except Exception as e:
+                print(f'CSIL server error: {e}', file=sys.stderr)
+                return self.error('Unexpected server error. See server terminal for details.',500)
+
+    server = ThreadingHTTPServer(('127.0.0.1',port),Handler)
+    print(f'CSIL Phase 3B gallery: http://127.0.0.1:{port}/ (Ctrl+C to stop)')
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+    finally: server.server_close()
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    choice = ap.add_mutually_exclusive_group(required=True)
-    choice.add_argument('--ids', nargs='+', metavar='AST-ID', help='Asset IDs in desired slide order')
-    choice.add_argument('--selection', type=Path, help='TXT (one ID per line), CSV (asset_id column), or JSON')
-    ap.add_argument('--library', type=Path, default=Path('output/asset_library'))
-    ap.add_argument('--output', type=Path, help='Output PPTX path; default is timestamped in output/assembled_decks')
-    ap.add_argument('--title', default='', help='Deck title stored in PowerPoint document properties')
-    ap.add_argument('--dry-run', action='store_true', help='Validate and print plan; do not start PowerPoint')
-    args = ap.parse_args()
-    try:
-        ids = args.ids if args.ids is not None else parse_selection(args.selection)
-        entries = check_assets(ids, args.library.resolve())
-    except (ValueError, OSError, json.JSONDecodeError) as e:
-        ap.error(str(e))
-    out = (args.output or Path('output/assembled_decks') /
-           ('CSIL_assembled_' + datetime.now().strftime('%Y%m%d_%H%M%S') + '.pptx')).resolve()
-    if out.suffix.lower() != '.pptx':
-        ap.error('--output must end in .pptx')
-    if out.exists():
-        ap.error(f'Refusing to overwrite existing file: {out}')
-    print(f'Assets selected: {len(entries)}')
-    for i, (aid, p) in enumerate(entries, 1):
-        print(f'  {i}. {aid} -> {p.name}')
-    print(f'Output: {out}')
-    if args.dry_run:
-        print('Dry run complete. No PowerPoint file created.')
-        return 0
-
-    try:
-        import pythoncom
-        import win32com.client
-    except ImportError:
-        print('ERROR: Windows PowerPoint assembly requires pywin32 (py -m pip install pywin32).', file=sys.stderr)
-        return 2
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    pythoncom.CoInitialize()
-    deck = None
-    inserted = []
-    try:
-        # Starting from an existing, valid PPTX avoids the PowerPoint COM
-        # PageSetup error that can occur with a brand-new empty presentation.
-        shutil.copy2(entries[0][1], out)
-        app = win32com.client.Dispatch('PowerPoint.Application')
-        deck = app.Presentations.Open(str(out), ReadOnly=0, Untitled=0, WithWindow=-1)
-        first_count = int(deck.Slides.Count)
-        if first_count < 1:
-            raise RuntimeError('First asset contains no slides')
-        inserted.append({'asset_id': entries[0][0], 'source_pptx': str(entries[0][1]),
-                         'slides_added': first_count,
-                         'native_top_level_shapes': [int(deck.Slides(j).Shapes.Count)
-                                                     for j in range(1, first_count+1)]})
-        print(f'[1/{len(entries)}] {entries[0][0]}: base presentation with {first_count} editable slide(s)', flush=True)
-
-        # Optional slide-size verification: do not prevent assembly if a
-        # PowerPoint installation does not expose PageSetup reliably.
-        base_size = None
-        try:
-            base_size = (float(deck.PageSetup.SlideWidth), float(deck.PageSetup.SlideHeight))
-        except Exception as exc:
-            print(f'Warning: Could not inspect base slide dimensions: {exc}', flush=True)
-
-        for index, (aid, source_path) in enumerate(entries[1:], 2):
-            # Check dimensions using the source file when available.
-            src = None
-            try:
-                src = app.Presentations.Open(str(source_path), ReadOnly=-1, Untitled=0, WithWindow=-1)
-                source_count = int(src.Slides.Count)
-                if source_count < 1:
-                    raise RuntimeError(f'{aid} contains no slides')
-                if base_size is not None:
-                    try:
-                        size = (float(src.PageSetup.SlideWidth), float(src.PageSetup.SlideHeight))
-                        if any(abs(a-b)>0.5 for a,b in zip(size, base_size)):
-                            raise RuntimeError(
-                                f'{aid} slide size {size} differs from base {base_size}; '
-                                'stopping to avoid distortion.')
-                    except RuntimeError:
-                        raise
-                    except Exception as exc:
-                        print(f'Warning: Could not inspect {aid} slide dimensions: {exc}', flush=True)
-            finally:
-                if src is not None:
-                    src.Close()
-
-            start_count = int(deck.Slides.Count)
-            added = int(deck.Slides.InsertFromFile(str(source_path), start_count, 1, source_count))
-            if added != source_count:
-                raise RuntimeError(f'{aid}: expected {source_count} slides, inserted {added}')
-            native_counts = [int(deck.Slides(start_count+j).Shapes.Count)
-                             for j in range(1, added+1)]
-            inserted.append({'asset_id': aid, 'source_pptx': str(source_path),
-                             'slides_added': added, 'native_top_level_shapes': native_counts})
-            print(f'[{index}/{len(entries)}] {aid}: inserted {added} editable slide(s), shape counts {native_counts}', flush=True)
-
-        if args.title:
-            try:
-                deck.BuiltInDocumentProperties('Title').Value = args.title
-            except Exception:
-                print('Warning: Could not set document title property.')
-        deck.Save()
-        print(f'SAVED: {out}')
-    except Exception as e:
-        print(f'ERROR: {e}', file=sys.stderr)
-        print('Assembly failed; incomplete output will be removed.', file=sys.stderr)
-        return 1
-    finally:
-        if deck is not None:
-            try:
-                deck.Close()
-            except Exception:
-                pass
-        pythoncom.CoUninitialize()
-        if len(inserted) != len(entries) and out.exists():
-            try:
-                out.unlink()
-            except OSError:
-                pass
-    report = out.with_suffix('.assembly.json')
-    report.write_text(json.dumps({'output':str(out),'title':args.title,
-                                  'total_slides':sum(x['slides_added'] for x in inserted),
-                                  'assets':inserted,
-                                  'review_required':['Inspect visual fidelity and slide order',
-                                                     'Verify native shape/text editability in PowerPoint',
-                                                     'Check fonts, theme, external links, and accessibility']},
-                                 indent=2), encoding='utf-8')
-    print(f'Report: {report}')
-    return 0
-
-if __name__ == '__main__':
-    sys.exit(main())
+    ap=argparse.ArgumentParser(description=__doc__)
+    group=ap.add_mutually_exclusive_group(required=True)
+    group.add_argument('--build',action='store_true',help='Generate/reuse local embeddings')
+    group.add_argument('--serve',action='store_true',help='Run local browser search')
+    ap.add_argument('--library',type=Path,default=Path('output/asset_library'))
+    ap.add_argument('--model',default=MODEL)
+    ap.add_argument('--port',type=int,default=8765)
+    ap.add_argument('--timeout',type=int,default=180)
+    args=ap.parse_args();root=args.library.resolve()
+    if args.build:build(root,args.model,args.timeout)
+    else:serve(root,args.port,args.timeout)
+if __name__=='__main__':main()
