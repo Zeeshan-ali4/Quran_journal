@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -99,51 +100,71 @@ def main():
     deck = None
     inserted = []
     try:
+        # Starting from an existing, valid PPTX avoids the PowerPoint COM
+        # PageSetup error that can occur with a brand-new empty presentation.
+        shutil.copy2(entries[0][1], out)
         app = win32com.client.Dispatch('PowerPoint.Application')
-        deck = app.Presentations.Add(WithWindow=-1)
-        # A new presentation may contain an initial slide depending on template settings.
-        while deck.Slides.Count:
-            deck.Slides(1).Delete()
-        # Match the first asset's slide dimensions. Others are checked for mismatch.
-        first = app.Presentations.Open(str(entries[0][1]), ReadOnly=-1, Untitled=0, WithWindow=-1)
+        deck = app.Presentations.Open(str(out), ReadOnly=0, Untitled=0, WithWindow=-1)
+        first_count = int(deck.Slides.Count)
+        if first_count < 1:
+            raise RuntimeError('First asset contains no slides')
+        inserted.append({'asset_id': entries[0][0], 'source_pptx': str(entries[0][1]),
+                         'slides_added': first_count,
+                         'native_top_level_shapes': [int(deck.Slides(j).Shapes.Count)
+                                                     for j in range(1, first_count+1)]})
+        print(f'[1/{len(entries)}] {entries[0][0]}: base presentation with {first_count} editable slide(s)', flush=True)
+
+        # Optional slide-size verification: do not prevent assembly if a
+        # PowerPoint installation does not expose PageSetup reliably.
+        base_size = None
         try:
-            width = float(first.PageSetup.SlideWidth)
-            height = float(first.PageSetup.SlideHeight)
-        finally:
-            first.Close()
-        deck.PageSetup.SlideWidth = width
-        deck.PageSetup.SlideHeight = height
-        for index, (aid, source_path) in enumerate(entries, 1):
-            src = app.Presentations.Open(str(source_path), ReadOnly=-1, Untitled=0, WithWindow=-1)
+            base_size = (float(deck.PageSetup.SlideWidth), float(deck.PageSetup.SlideHeight))
+        except Exception as exc:
+            print(f'Warning: Could not inspect base slide dimensions: {exc}', flush=True)
+
+        for index, (aid, source_path) in enumerate(entries[1:], 2):
+            # Check dimensions using the source file when available.
+            src = None
             try:
-                sw, sh = float(src.PageSetup.SlideWidth), float(src.PageSetup.SlideHeight)
-                if abs(sw-width)>0.5 or abs(sh-height)>0.5:
-                    raise RuntimeError(f'{aid} slide size differs from first asset ({sw:.1f}x{sh:.1f} vs {width:.1f}x{height:.1f} points). Stopping to avoid distortion.')
+                src = app.Presentations.Open(str(source_path), ReadOnly=-1, Untitled=0, WithWindow=-1)
                 source_count = int(src.Slides.Count)
                 if source_count < 1:
                     raise RuntimeError(f'{aid} contains no slides')
-                # InsertFromFile imports native slides, including editable PowerPoint objects.
-                # All source slides are imported (normally one per extracted asset).
-                start_count = int(deck.Slides.Count)
-                added = int(deck.Slides.InsertFromFile(str(source_path), start_count, 1, source_count))
-                if added != source_count:
-                    raise RuntimeError(f'{aid}: expected {source_count} slides, inserted {added}')
-                native_counts = [int(deck.Slides(start_count+j).Shapes.Count) for j in range(1, added+1)]
-                inserted.append({'asset_id': aid, 'source_pptx': str(source_path),
-                                 'slides_added': added, 'native_top_level_shapes': native_counts})
-                print(f'[{index}/{len(entries)}] {aid}: inserted {added} editable slide(s), shape counts {native_counts}', flush=True)
+                if base_size is not None:
+                    try:
+                        size = (float(src.PageSetup.SlideWidth), float(src.PageSetup.SlideHeight))
+                        if any(abs(a-b)>0.5 for a,b in zip(size, base_size)):
+                            raise RuntimeError(
+                                f'{aid} slide size {size} differs from base {base_size}; '
+                                'stopping to avoid distortion.')
+                    except RuntimeError:
+                        raise
+                    except Exception as exc:
+                        print(f'Warning: Could not inspect {aid} slide dimensions: {exc}', flush=True)
             finally:
-                src.Close()
+                if src is not None:
+                    src.Close()
+
+            start_count = int(deck.Slides.Count)
+            added = int(deck.Slides.InsertFromFile(str(source_path), start_count, 1, source_count))
+            if added != source_count:
+                raise RuntimeError(f'{aid}: expected {source_count} slides, inserted {added}')
+            native_counts = [int(deck.Slides(start_count+j).Shapes.Count)
+                             for j in range(1, added+1)]
+            inserted.append({'asset_id': aid, 'source_pptx': str(source_path),
+                             'slides_added': added, 'native_top_level_shapes': native_counts})
+            print(f'[{index}/{len(entries)}] {aid}: inserted {added} editable slide(s), shape counts {native_counts}', flush=True)
+
         if args.title:
             try:
                 deck.BuiltInDocumentProperties('Title').Value = args.title
             except Exception:
                 print('Warning: Could not set document title property.')
-        deck.SaveAs(str(out), PP_PPTX)
+        deck.Save()
         print(f'SAVED: {out}')
     except Exception as e:
         print(f'ERROR: {e}', file=sys.stderr)
-        print('No completed deck saved; check the selected assets and retry.', file=sys.stderr)
+        print('Assembly failed; incomplete output will be removed.', file=sys.stderr)
         return 1
     finally:
         if deck is not None:
@@ -152,6 +173,11 @@ def main():
             except Exception:
                 pass
         pythoncom.CoUninitialize()
+        if len(inserted) != len(entries) and out.exists():
+            try:
+                out.unlink()
+            except OSError:
+                pass
     report = out.with_suffix('.assembly.json')
     report.write_text(json.dumps({'output':str(out),'title':args.title,
                                   'total_slides':sum(x['slides_added'] for x in inserted),
